@@ -1,0 +1,69 @@
+<script>
+  (() => {
+    function normalizeServerName(name) {
+      return (name || "").toString().trim().toLowerCase().replace(/[\W]/gu, "_");
+    }
+
+    function isLikelyServerEntry(entry) {
+      return entry && typeof entry === "object" && ("command" in entry || "args" in entry || "url" in entry || "serverUrl" in entry);
+    }
+
+    function collectServerEntries(root) {
+      const seen = new WeakSet();
+      const entries = [];
+      function visit(node, keyHint) {
+        if (!node || typeof node !== "object" || seen.has(node)) return;
+        seen.add(node);
+        if (Array.isArray(node)) return node.forEach((item) => visit(item, null));
+        if (isLikelyServerEntry(node)) entries.push({ entry: node, keyHint });
+        for (const [key, value] of Object.entries(node)) visit(value, key);
+      }
+      visit(root, null);
+      return entries;
+    }
+
+    function ensureDisabledEverywhere(configRoot) {
+      for (const { entry } of collectServerEntries(configRoot)) {
+        if (!Object.prototype.hasOwnProperty.call(entry, "disabled")) entry.disabled = false;
+      }
+      return configRoot;
+    }
+
+    function toggleEntry(configRoot, targetName) {
+      const normalized = normalizeServerName(targetName);
+      for (const { entry, keyHint } of collectServerEntries(configRoot)) {
+        const names = [keyHint, entry.name, entry.displayName, entry.id].map(normalizeServerName).filter(Boolean);
+        if (names.includes(normalized)) {
+          entry.disabled = !Boolean(entry.disabled);
+          return entry.disabled;
+        }
+      }
+      return null;
+    }
+
+    function patchStore() {
+      const store = globalThis.Alpine?.store?.("mcpServersStore");
+      if (!store || store.__enhancedMcpPatched) return;
+      store.__enhancedMcpPatched = true;
+      store.enhancedNormalizeConfig = function(raw) {
+        const parsed = raw?.trim() ? JSON.parse(raw) : {};
+        return JSON.stringify(ensureDisabledEverywhere(parsed), null, 2);
+      };
+      if (typeof store._normalizeConfigString !== "function") {
+        store._normalizeConfigString = store.enhancedNormalizeConfig;
+      }
+      if (typeof store.enhancedToggleDisabled !== "function") {
+        store.enhancedToggleDisabled = function(raw, name) {
+          const parsed = raw?.trim() ? JSON.parse(raw) : {};
+          ensureDisabledEverywhere(parsed);
+          const disabled = toggleEntry(parsed, name);
+          return { disabled, formatted: JSON.stringify(parsed, null, 2) };
+        };
+      }
+    }
+
+    document.addEventListener("alpine:init", () => setTimeout(patchStore, 0));
+    document.addEventListener("DOMContentLoaded", patchStore, { once: true });
+    new MutationObserver(patchStore).observe(document.documentElement, { childList: true, subtree: true });
+  })();
+</script>
