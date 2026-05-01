@@ -20,7 +20,7 @@ cp -r plugins/<plugin-name> /path/to/agent-zero/plugins/<plugin-name>
 
 Restart Agent Zero to activate the plugin.
 
-## Monorepo + Per-Plugin Repos (Option A)
+## Monorepo + Per-Plugin Repos
 
 This repo is a monorepo that syncs to individual per-plugin GitHub repos:
 
