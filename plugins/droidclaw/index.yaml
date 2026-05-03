@@ -1,0 +1,9 @@
+title: Android Control
+description: Control Android devices from Agent Zero with ADB pairing, screenshots, quick actions, and LLM-guided task execution.
+github: https://github.com/agent0ai/android-control
+tags:
+  - automation
+  - tools
+  - agents
+  - integration
+  - ui
