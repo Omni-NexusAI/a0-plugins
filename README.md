@@ -11,15 +11,15 @@ set copied from container
 | Plugin | Version | Description |
 |--------|---------|-------------|
 | [`_agentspine_identity`](plugins/_agentspine_identity/) | `0.9.9` | Agentspine identity overlay for product naming, first-run greeting text, banners, page title, version display, and runtime text replacement. |
-| [`_enhanced_mcp_config`](plugins/_enhanced_mcp_config/) | `0.9.9` | Built-in MCP configuration enhancement placeholder for the Agentspine MCP settings surface. |
-| [`_enhanced_speech`](plugins/_enhanced_speech/) | `0.9.9` | Enhanced speech support with remote Kokoro worker detection/defaults and a WebUI STT recorder patch. |
-| [`_multi_source_updater`](plugins/_multi_source_updater/) | `0.9.9` | Built-in updater enhancement placeholder for multi-source update behavior in Agentspine builds. |
+| [`_enhanced_mcp_config`](plugins/_enhanced_mcp_config/) | `0.9.9` | MCP server status, enable/disable toggles, apply/toggle API handlers, and settings UI copied from the GPU container behavior. |
+| [`_enhanced_speech`](plugins/_enhanced_speech/) | `0.9.9` | Remote Kokoro runtime support, speech settings UI, worker detection/defaults, and WebUI STT recorder patch. |
+| [`_multi_source_updater`](plugins/_multi_source_updater/) | `0.9.9` | Multi-source self-update behavior, active source persistence, source-aware release lookup, and update-source UI. |
 
 ## Additional Plugin Sources
 
 | Plugin | Status |
 |--------|--------|
-| [`provider_profiles`](plugins/provider_profiles/) | Existing upstream portable plugin. `_provider_profiles` was not present in the synced GPU-pre container, so this directory should not be treated as container-matched until it is deployed and re-synced. |
+| [`provider_profiles`](plugins/provider_profiles/) | Portable `1.0.1` plugin mirroring the provider-history behavior found in the container's built-in `_model_config`: saves/restores model, API base, and context length per provider. |
 
 ## Installation
 
@@ -36,6 +36,8 @@ are updated together.
 ## Maintenance
 
 - `CONTAINER_SYNC.md` records the container snapshot used for this sync.
+- Some container behavior is packaged under plugin-local `overrides/a0` folders
+  because it was baked into core runtime files in the source container.
 - `AGENTS.md` files implement DOX guidance for the repo, `plugins/`, and each
   plugin boundary.
 - Do not commit runtime bytecode caches, logs, secrets, or local settings.

@@ -1,24 +1,41 @@
 # Provider Profiles
 
-Portable Agent Zero plugin that adds provider-aware model memory to the model configurator.
+Portable Agent Zero plugin that adds provider-aware model memory to the model
+configurator.
 
-## What it does
+## What It Does
 
-- **Remembers your last model per provider** — when you switch from OpenAI to Ollama and back, your previously selected OpenAI model is automatically restored.
-- **Auto-fills local provider API bases** — LM Studio and Ollama endpoints are populated automatically when you select those providers.
-- **Clears stale model names** — switching to a provider with no saved selection blanks the model field so you start fresh.
+- Remembers the last model per provider, so switching away from a provider and
+  back restores the provider-specific model.
+- Saves and restores `api_base` beside the model name.
+- Saves and restores `ctx_length` beside the model name.
+- Auto-fills local provider API bases for LM Studio and Ollama.
+- Clears stale model names when switching to a provider with no saved selection.
+
+Saved provider history entries use this shape:
+
+```json
+{
+  "name": "model-name",
+  "api_base": "http://host.docker.internal:1234/v1",
+  "ctx_length": 128000
+}
+```
 
 ## Compatibility
 
 - Agent Zero runtime with the v1.7+ plugin loader and `_model_config` UI store.
-- Gracefully degrades on unsupported hosts: the plugin waits for `$store.modelConfig` and exits silently if it is unavailable.
+- Gracefully degrades on unsupported hosts: the plugin waits for
+  `$store.modelConfig` and exits silently if it is unavailable.
 - No dependency on external modules or identity systems.
 
 ## Installation
 
-1. Copy the `provider_profiles` folder into your Agent Zero `plugins_custom/` directory.
-2. Restart Agent Zero (or reload plugins from the UI).
-3. The provider select dropdowns in the model configurator will now persist and restore model selections automatically.
+1. Copy the `provider_profiles` folder into your Agent Zero `plugins_custom/`
+   directory.
+2. Restart Agent Zero or reload plugins from the UI.
+3. Provider dropdowns in the model configurator will persist and restore model,
+   API base, and context length selections automatically.
 
 ## Configuration
 

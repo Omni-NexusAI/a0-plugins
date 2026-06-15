@@ -6,7 +6,7 @@
 
 ## Sync Status
 
-`_provider_profiles` was not present in the GPU-pre container sync source `ea634265aca0b0e2567383caf1bc3e8380272566ae59fe08b745adda4ed48c17`. This directory is existing upstream portable plugin source, not a container-matched copy for the current sync.
+`_provider_profiles` was not present in the GPU-pre container sync source `ea634265aca0b0e2567383caf1bc3e8380272566ae59fe08b745adda4ed48c17`. The equivalent provider-history behavior was found in the container's built-in `_model_config` plugin, so this portable plugin mirrors that behavior for hosts where it is not baked in.
 
 ## Ownership
 
@@ -17,6 +17,7 @@
 ## Local Contracts
 
 - Preserve model selections per provider.
+- Preserve API base and context length beside model selections.
 - Preserve local-provider API base defaults for LM Studio and Ollama unless config changes them.
 - Clear stale model names only when the plugin config says to do so.
 - Degrade safely when the target model config store is absent.

@@ -2,15 +2,13 @@
 
 Built-in Agentspine MCP configuration enhancement plugin.
 
-This directory is copied from the `agentspine-gpu-pre` container state synced on
+This directory is synced from the `agentspine-gpu-pre` container state on
 2026-06-15. The manifest version is `0.9.9` and the installed plugin name is
 `_enhanced_mcp_config`.
 
 ## Purpose
 
-The plugin represents the Agentspine MCP settings enhancement boundary. The
-manifest places it in the `mcp` settings section and describes the intended
-feature set:
+The plugin provides the Agentspine MCP settings enhancement boundary:
 
 - per-server enable/disable toggle controls;
 - refined MCP server status handling in settings;
@@ -18,34 +16,44 @@ feature set:
 
 ## Design
 
-In this container state, the implementation is intentionally minimal:
+In the live GPU container, this behavior is baked into core API, helper, and
+WebUI files. The monorepo plugin vendors those files under `overrides/a0` and
+applies them on agent startup.
 
-- `plugin.yaml` declares the always-enabled plugin and MCP settings placement.
-- `extensions/python/agent_init/_10_enhanced_mcp_config.py` defines the runtime
-  extension class and returns without modifying the host.
-- `webui/thumbnail.svg` provides the plugin asset.
-
-This makes the plugin a durable placeholder and documentation boundary for the
-MCP configuration work that exists in or around the current Agentspine runtime.
+- `extensions/python/agent_init/_10_enhanced_mcp_config.py` applies the override
+  payload and records changed files on the agent.
+- `helpers/overlay.py` copies changed files from `overrides/a0` into the runtime
+  root.
+- `overrides/a0/api/` contains the MCP status, apply, toggle, log, and detail
+  API handlers.
+- `overrides/a0/helpers/mcp_handler.py` contains the container MCP handler with
+  `disabled` server support.
+- `overrides/a0/helpers/settings.py` contains the container settings schema and
+  MCP reload behavior.
+- `overrides/a0/webui/components/settings/mcp/` contains the enhanced MCP
+  settings modal, status list, toggle UI, examples, log view, and detail view.
 
 ## Function
 
-At startup, Agent Zero's plugin framework can load `EnhancedMcpConfigInit`, but
-the extension does not patch settings, files, routes, or WebUI state in this
-snapshot.
+After startup applies the payload, the MCP modal behaves like the GPU container:
 
-Future implementation should preserve unknown MCP server keys, avoid destructive
-config rewrites, and make server disabled/enabled state explicit in persisted
-configuration.
+- every discovered server entry receives a `disabled` field if one is missing;
+- toggling a server updates the JSON editor immediately;
+- the status row reflects the disabled state immediately and marks disabled
+  servers disconnected;
+- the toggle is disabled while an apply operation is running;
+- toggles are applied through `mcp_servers_toggle`;
+- full config applies are normalized and sent through `mcp_servers_apply`;
+- status polling pauses during apply and restarts afterward.
 
 ## Current Limits
 
-The manifest and README describe the intended MCP enhancement surface, but the
-current copied code is a no-op. Do not assume active toggle UI or config
-mutation exists until source code is added.
+The override payload intentionally matches the GPU container. It is more
+invasive than a pure WebUI extension because the behavior currently depends on
+core API handlers and helper files.
 
 ## Verification
 
-- Parse the Python extension after edits.
-- For future behavior, test empty config, existing enabled servers, existing
-  disabled servers, unknown server keys, and unsupported host settings pages.
+- Parse the Python extension, helper, API handlers, and override Python files.
+- Test empty config, existing enabled servers, existing disabled servers,
+  unknown server keys, and unsupported host settings pages.

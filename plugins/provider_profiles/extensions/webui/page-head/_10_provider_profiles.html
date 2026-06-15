@@ -41,6 +41,7 @@
         const saved = this._providerModelHistory[`${sectionKey}_${newProvider}`];
         if (saved?.name) {
           model.name = saved.name;
+          if (saved.api_base !== undefined) model.api_base = saved.api_base || "";
           if (saved.ctx_length !== undefined) model.ctx_length = saved.ctx_length;
         } else {
           model.name = "";

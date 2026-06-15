@@ -19,10 +19,23 @@ These directories were copied from the container and cleaned of bytecode caches:
 
 Each synced manifest reports version `0.9.9`.
 
+## Behavior Payloads
+
+Some feature behavior in the GPU-pre container is baked into core runtime files
+rather than the plugin directories themselves. The monorepo plugin packages now
+include those copied files under `overrides/a0` and apply them at startup:
+
+- `_enhanced_speech`: `helpers/settings.py`, `helpers/build_type.py`,
+  `helpers/kokoro_tts.py`, and speech settings UI.
+- `_enhanced_mcp_config`: MCP API handlers, `helpers/mcp_handler.py`,
+  `helpers/settings.py`, and MCP settings UI.
+- `_multi_source_updater`: `helpers/self_update.py`, `helpers/settings.py`,
+  and self-update UI/store files.
+
 ## Not Present In This Container
 
 - `_provider_profiles` was not present under `/a0/plugins`, `/a0/usr/plugins`, or `/a0/usr/plugins_disabled` in this container state.
-- `plugins/provider_profiles` remains in this monorepo as existing upstream portable plugin source, but it is not container-matched for this sync.
+- `plugins/provider_profiles` remains in this monorepo as portable plugin source. Its behavior mirrors the provider-history logic found in the container's built-in `_model_config` plugin.
 
 ## Maintenance Rules
 

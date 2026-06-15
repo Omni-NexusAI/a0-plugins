@@ -38,7 +38,7 @@
 ## Child DOX Index
 
 - `_agentspine_identity/AGENTS.md`: Agentspine product identity overlay, greeting, banner, title, and version display.
-- `_enhanced_mcp_config/AGENTS.md`: Agentspine MCP configuration enhancement placeholder synced from the GPU-pre container.
-- `_enhanced_speech/AGENTS.md`: remote Kokoro TTS detection/defaults and enhanced STT recorder patch.
-- `_multi_source_updater/AGENTS.md`: Agentspine updater enhancement placeholder synced from the GPU-pre container.
-- `provider_profiles/AGENTS.md`: existing upstream provider-aware model selection plugin; not present in the synced GPU-pre container.
+- `_enhanced_mcp_config/AGENTS.md`: MCP settings UI, disabled flag handling, status/apply/toggle API handlers, and override payload copied from the GPU-pre container.
+- `_enhanced_speech/AGENTS.md`: remote Kokoro TTS support, speech settings UI, detection/defaults, and enhanced STT recorder patch.
+- `_multi_source_updater/AGENTS.md`: source-aware self-update helper/settings/UI override payload copied from the GPU-pre container.
+- `provider_profiles/AGENTS.md`: portable provider-aware model, API base, and context-length restore behavior mirroring the GPU-pre container's `_model_config`.

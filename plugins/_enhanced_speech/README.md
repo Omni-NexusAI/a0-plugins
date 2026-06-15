@@ -24,6 +24,8 @@ The plugin has one shared backend helper:
 - `helpers/remote_tts.py` owns URL normalization, remote worker detection,
   runtime settings defaults, device-option injection, and idempotent host
   patching.
+- `helpers/overlay.py` owns applying container-copied core files from
+  `overrides/a0`.
 
 Two Python extension hooks load that same helper:
 
@@ -40,6 +42,15 @@ The WebUI hook lives in:
 It imports the speech and microphone setting stores, replaces
 `speechStore.initMicrophone`, and creates an `EnhancedMicrophoneInput` that
 tracks explicit recorder states.
+
+The live GPU container also carries remote Kokoro behavior in core helper,
+settings, and speech settings UI files. This plugin vendors those files under
+`overrides/a0` so another A0/AS instance can receive the same runtime support:
+
+- `overrides/a0/helpers/build_type.py`
+- `overrides/a0/helpers/kokoro_tts.py`
+- `overrides/a0/helpers/settings.py`
+- `overrides/a0/webui/components/settings/agent/speech.html`
 
 ## Function
 
@@ -71,6 +82,7 @@ HTML/CSS. If that UI needs to be restored, implement it deliberately and update
 ## Verification
 
 - Parse the Python files after backend changes.
+- Verify override files still match the intended container/source behavior.
 - In a compatible runtime, confirm the `remote` TTS device appears only when a
   configured or expected worker is available.
 - In the WebUI, verify microphone permission failure, silence detection,
