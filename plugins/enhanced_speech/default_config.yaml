@@ -1,5 +1,0 @@
-tts_device_default: auto
-tts_primary_voice_default: am_michael
-tts_secondary_voice_default: ""
-tts_voice_blend_default: 50
-tts_speed_default: 1.1

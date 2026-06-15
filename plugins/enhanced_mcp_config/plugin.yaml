@@ -1,6 +1,0 @@
-name: enhanced_mcp_config
-title: Enhanced MCP Configurator
-description: Normalizes disabled flags in MCP server entries and preserves toggle state in JSON-backed MCP configuration.
-version: 1.0.0
-settings_sections:
-  - mcp

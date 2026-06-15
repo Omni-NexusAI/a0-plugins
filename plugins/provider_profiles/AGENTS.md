@@ -4,6 +4,10 @@
 
 `provider_profiles` owns provider-aware model memory for compatible Agent Zero model configuration UIs.
 
+## Sync Status
+
+`_provider_profiles` was not present in the GPU-pre container sync source `ea634265aca0b0e2567383caf1bc3e8380272566ae59fe08b745adda4ed48c17`. This directory is existing upstream portable plugin source, not a container-matched copy for the current sync.
+
 ## Ownership
 
 - `README.md` owns user-facing behavior and compatibility.
@@ -16,6 +20,7 @@
 - Preserve local-provider API base defaults for LM Studio and Ollama unless config changes them.
 - Clear stale model names only when the plugin config says to do so.
 - Degrade safely when the target model config store is absent.
+- Do not describe this plugin as synced from the current GPU-pre container until it is actually present there and copied from that state.
 
 ## Work Guidance
 

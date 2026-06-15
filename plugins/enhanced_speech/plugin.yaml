@@ -1,6 +1,0 @@
-name: enhanced_speech
-title: Enhanced Speech
-description: Kokoro TTS enhancements with dual-voice blending, speed control, and remote worker support for compatible Agent Zero runtimes.
-version: 1.0.0
-settings_sections:
-  - agent
