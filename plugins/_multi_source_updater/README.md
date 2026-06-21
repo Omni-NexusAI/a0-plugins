@@ -1,56 +1,53 @@
-# Multi Source Updater
+# _multi_source_updater
 
-Built-in Agentspine self-update enhancement plugin.
-
-This directory is synced from the `agentspine-gpu-pre` container state on
-2026-06-15. The manifest version is `0.9.9` and the installed plugin name is
-`_multi_source_updater`.
+Agentspine built-in multi-source self-updater overlay for Agent Zero v1.20.
 
 ## Purpose
 
-The plugin provides the Agentspine updater enhancement boundary:
+This plugin lets the updater choose between upstream Agent Zero and Agentspine
+sources while preserving truthful runtime health metadata.
 
-- selecting update source between Omni-NexusAI and agent0ai;
-- preserving the selected update source in persisted settings;
-- providing Agentspine v0.9.9-pre compatibility display behavior.
+## Built-In Source And Config
 
-## Design
+- Built-in source: `/a0/plugins/_multi_source_updater`
+- User config/state: `/a0/usr/plugins/_multi_source_updater/config.json`
+- Pending update payload: Agent Zero self-update request file managed by
+  `helpers.self_update`
 
-In the live GPU container, updater behavior is baked into core helper, settings,
-and WebUI files. The monorepo plugin vendors those files under `overrides/a0`
-and applies them on agent startup.
+The plugin is an underscore built-in overlay. Do not enable a duplicate custom
+updater plugin beside it.
 
-- `extensions/python/agent_init/_10_multi_source_updater.py` applies the
-  override payload and records changed files on the agent.
-- `helpers/overlay.py` copies changed files from `overrides/a0` into the runtime
-  root.
-- `overrides/a0/helpers/self_update.py` contains update-source selection logic.
-- `overrides/a0/helpers/settings.py` contains the `self_update_source` setting
-  and updater cache invalidation behavior.
-- `overrides/a0/webui/components/settings/external/` contains the self-update
-  store and modal with the update-source selector.
+## Runtime Hooks
 
-## Function
+- `agent_init` patches `helpers.self_update` branch/tag lookup, update info, and
+  scheduling behavior.
+- Page-head UI patch adds the update-source selector and refreshes branch/tag
+  choices for the selected source.
+- Scheduled payloads include `update_source`, `remote_url`, selected branch,
+  selected tag, and diagnostic source version fields.
 
-After startup applies the payload, the self-update flow behaves like the GPU
-container:
+## Behavior
 
-- update sources are `omni-nexusai` and `agent0ai`;
-- default source is `omni-nexusai`;
-- `self_update_source` is persisted in settings;
-- remote URL selection follows the active source;
-- release/tag listing follows the active source;
-- Omni-NexusAI source uses Agentspine preview display behavior;
-- self-update caches are invalidated when the source changes.
+- Upstream `agent0ai` source uses real upstream tags and real current version.
+- Agentspine `omni-nexusai` source treats this standard-pre build as effective
+  current/latest `v0.9.9-standard-pre`.
+- Legacy `v0.9.8-custom` may appear as old history but must not be offered as a
+  backward latest target for this build.
+- Spoofing is source-scoped and must not alter `/api/health`.
 
-## Current Limits
+## Compatibility Notes
 
-The override payload intentionally matches the GPU container. It is more
-invasive than a pure extension because self-update behavior currently depends on
-core helper and settings files.
+- Target runtime: Agent Zero `M v1.20` with Agentspine
+  `v0.9.9-standard-pre`.
+- Agentspine tags use `standard`, `standard-pre`, `gpu`, and `gpu-pre`; the
+  retired `custom` suffix is legacy-only.
 
-## Verification
+## Test Checklist
 
-- Parse the Python extension, helper, and override Python files.
-- Verify source selection persistence, display labels, fallback behavior, and
-  unsupported host behavior.
+- Compile plugin Python files.
+- Confirm `/api/health` still reports actual Agent Zero `M v1.20`.
+- Switch updater source to Agentspine and confirm current/latest displays
+  `v0.9.9-standard-pre`.
+- Switch updater source to upstream and confirm upstream tags remain available.
+- Dry-run schedule and confirm payload includes selected source, remote URL, and
+  `agentspine_effective_current_tag: v0.9.9-standard-pre`.

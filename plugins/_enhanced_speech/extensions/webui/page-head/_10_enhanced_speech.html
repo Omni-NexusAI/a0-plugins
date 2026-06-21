@@ -1,0 +1,561 @@
+<script>
+  (() => {
+    const kokoroDefaults = {
+      voice: "am_michael",
+      secondary_voice: "",
+      voice_blend: 50,
+      speed: 1.1,
+      device: "auto",
+      remote_enabled: false,
+      remote_url: "http://kokoro-gpu-worker:8891",
+      remote_token: "",
+      remote_timeout: 20,
+    };
+
+    const whisperDefaults = {
+      model_size: "base",
+      language: "en",
+      message_mode: "send",
+      silence_threshold: 0.3,
+      silence_duration: 1000,
+      waiting_timeout: 2000,
+    };
+
+    let voiceOptions = null;
+    let voiceOptionsPromise = null;
+    let cudaAvailable = false;
+    let refreshScheduled = false;
+    let refreshRunning = false;
+    let refreshAgain = false;
+
+    function hasStableSentenceTail(text, chunks) {
+      const cleaned = String(text || "").trim();
+      if (!cleaned || !chunks?.length || chunks[chunks.length - 1].length < 12) return false;
+      if (/[!?][\"')\]]*$/.test(cleaned)) return true;
+      if (!/\.[\"')\]]*$/.test(cleaned)) return false;
+      return !/(?:\b(?:mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e)|\b[A-Z])\.[\"')\]]*$/i.test(cleaned);
+    }
+
+    function isRuntimeSpeaking(runtime) {
+      return typeof runtime?.isSpeaking === "function"
+        ? runtime.isSpeaking()
+        : Boolean(runtime?.isSpeaking);
+    }
+
+    async function waitForPlaybackStart(runtime, playback) {
+      let settled = false;
+      playback.finally(() => { settled = true; }).catch(() => {});
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        if (settled || isRuntimeSpeaking(runtime)) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
+    function patchProviderPipeline(runtime) {
+      if (typeof runtime?.speakWithProvider !== "function" || runtime.__agentspineProviderPipelinePatched) return;
+      runtime.__agentspineProviderPipelinePatched = true;
+      runtime.speakWithProvider = async function(provider, text, waitForPrevious = false, terminator = null) {
+        const payload = await provider.synthesize(text, {
+          providerId: this.getActiveProviderId?.() || "",
+        });
+
+        while (waitForPrevious && (isRuntimeSpeaking(this) || this.__agentspinePlaybackPending)) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        if (terminator?.()) return;
+        if (!waitForPrevious) this.stopAudio?.();
+        if (!payload) return;
+
+        const parts = Array.isArray(payload.audioParts)
+          ? payload.audioParts
+          : [payload.audioBase64 || payload.audio].filter(Boolean);
+        if (!parts.length) return;
+
+        this.__agentspinePlaybackPending = true;
+        const playback = (async () => {
+          try {
+            for (const part of parts) {
+              if (terminator?.()) return;
+              await this.playAudioBase64(part, payload.mimeType);
+            }
+          } finally {
+            this.__agentspinePlaybackPending = false;
+          }
+        })();
+        playback.catch((error) => console.error("TTS playback failed", error));
+
+        // Return as soon as playback starts so the next sentence can be
+        // synthesized while the current sentence is still playing.
+        await waitForPlaybackStart(this, playback);
+      };
+    }
+
+    function patchSpeechStream() {
+      const store = globalThis.ttsService || globalThis.Alpine?.store?.("speech");
+      if (!store) return false;
+      if (store.__agentspineEarlySpeechPatched) return true;
+      store.__agentspineEarlySpeechPatched = true;
+      patchProviderPipeline(store);
+
+      const sentinel = "__agentspine_unfinished_tail__";
+      const originalChunkText = store.chunkText.bind(store);
+      store.chunkText = function(text, options) {
+        const chunks = originalChunkText(text, options);
+        if (this.__agentspineReleaseStableTail && hasStableSentenceTail(text, chunks)) {
+          return [...chunks, sentinel];
+        }
+        return chunks;
+      };
+
+      const originalSpeakStream = store.speakStream.bind(store);
+      store.speakStream = function(id, text, finished = false) {
+        const cleaned = this.cleanText?.(text) || String(text || "");
+        this.__agentspineReleaseStableTail = !finished && hasStableSentenceTail(cleaned, originalChunkText(cleaned));
+        try {
+          return originalSpeakStream(id, text, finished);
+        } finally {
+          this.__agentspineReleaseStableTail = false;
+        }
+      };
+      return true;
+    }
+
+    function ensureSpeechStreamPatch(attempt = 0) {
+      if (patchSpeechStream() || attempt >= 1200) return;
+      setTimeout(() => ensureSpeechStreamPatch(attempt + 1), 100);
+    }
+
+    async function callJson(path, payload = {}) {
+      const api = await import("/js/api.js");
+      return api.callJsonApi(path, payload);
+    }
+
+    async function loadVoices(current = {}) {
+      if (voiceOptions) return voiceOptions;
+      if (!voiceOptionsPromise) {
+        voiceOptionsPromise = callJson("/plugins/_enhanced_speech/voices", current)
+          .then((result) => {
+            cudaAvailable = Boolean(result?.cuda_available);
+            return result?.voices || [];
+          })
+          .catch(() => []);
+      }
+      voiceOptions = await voiceOptionsPromise;
+      return voiceOptions;
+    }
+
+    function getModalContexts() {
+      return Array.from(document.querySelectorAll(".modal"))
+        .map((modal) => ({ modal, context: modal.__pluginSettingsContext }))
+        .filter((entry) => entry.context?.pluginName && entry.context?.settings);
+    }
+
+    function guardContextSave(context) {
+      if (!context || context.__agentspineSpeechSaveGuarded) return;
+      const originalSave = context.save?.bind(context);
+      if (!originalSave) return;
+      context.__agentspineSpeechSaveGuarded = true;
+      context.save = async (...args) => {
+        if (context.__agentspineSpeechSaveInFlight) return;
+        context.__agentspineSpeechSaveInFlight = true;
+        try {
+          return await originalSave(...args);
+        } finally {
+          context.__agentspineSpeechSaveInFlight = false;
+        }
+      };
+    }
+
+    function guardConfigOpen(store, pluginName) {
+      if (!store || store.__agentspineConfigOpenGuarded || typeof store.openConfig !== "function") return;
+      store.__agentspineConfigOpenGuarded = true;
+      const originalOpenConfig = store.openConfig.bind(store);
+      store.openConfig = async function(...args) {
+        if (this.__agentspineConfigOpenPromise) return this.__agentspineConfigOpenPromise;
+        const alreadyOpen = getModalContexts().some(({ context }) => context.pluginName === pluginName);
+        if (alreadyOpen) return;
+        const pending = Promise.resolve(originalOpenConfig(...args));
+        this.__agentspineConfigOpenPromise = pending;
+        try {
+          return await pending;
+        } finally {
+          if (this.__agentspineConfigOpenPromise === pending) this.__agentspineConfigOpenPromise = null;
+        }
+      };
+    }
+
+    function ensureDefaults(settings, defaults) {
+      if (!settings || typeof settings !== "object") return;
+      for (const [key, value] of Object.entries(defaults)) {
+        if (!(key in settings)) settings[key] = value;
+      }
+    }
+
+    function clampBlend(value) {
+      return Math.max(1, Math.min(99, Number(value) || 50));
+    }
+
+    function field(label, description, control, extraClass = "") {
+      const wrapper = document.createElement("div");
+      wrapper.className = `field enhanced-speech-field ${extraClass}`.trim();
+      const fieldLabel = document.createElement("div");
+      fieldLabel.className = "field-label";
+      const title = document.createElement("div");
+      title.className = "field-title";
+      title.textContent = label;
+      const desc = document.createElement("div");
+      desc.className = "field-description";
+      desc.textContent = description;
+      fieldLabel.append(title, desc);
+      const fieldControl = document.createElement("div");
+      fieldControl.className = "field-control";
+      fieldControl.append(control);
+      wrapper.append(fieldLabel, fieldControl);
+      return wrapper;
+    }
+
+    function bindInput(input, context, key, coerce = (value) => value) {
+      const readValue = () => input.type === "checkbox" ? input.checked : input.value;
+      const update = () => {
+        context.settings[key] = coerce(readValue());
+      };
+      if (input.type === "checkbox") {
+        input.checked = Boolean(context.settings[key]);
+      } else {
+        input.value = context.settings[key] ?? "";
+      }
+      input.addEventListener("input", update);
+      input.addEventListener("change", update);
+      return input;
+    }
+
+    function fieldPage(modal) {
+      return modal?.querySelector?.(".plugin-config-page") || null;
+    }
+
+    function fillVoiceSelect(select, options, selected, allowEmpty = false) {
+      const current = selected || "";
+      select.replaceChildren();
+      if (allowEmpty) {
+        const empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = "None";
+        select.append(empty);
+      }
+      const seen = new Set();
+      for (const item of options || []) {
+        const value = item?.value || "";
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = item.label || value;
+        select.append(option);
+      }
+      if (current && !seen.has(current)) {
+        const option = document.createElement("option");
+        option.value = current;
+        option.textContent = current;
+        select.append(option);
+      }
+      select.value = current;
+    }
+
+    async function enhancePrimaryVoiceField(page, context) {
+      if (page.querySelector(".enhanced-speech-primary-voice")) return;
+      const voiceTitle = Array.from(page.querySelectorAll(".field-title"))
+        .find((title) => title.textContent.trim().toLowerCase() === "voice");
+      const fieldRoot = voiceTitle?.closest(".field");
+      const control = fieldRoot?.querySelector(".field-control");
+      const original = control?.querySelector("input, select");
+      if (!control || !original) return;
+
+      const select = document.createElement("select");
+      select.className = "enhanced-speech-primary-voice enhanced-speech-voice-select";
+      fillVoiceSelect(select, await loadVoices(context.settings), context.settings.voice || context.settings.primary_voice || "am_michael");
+      select.addEventListener("change", () => {
+        context.settings.voice = select.value;
+        context.settings.primary_voice = select.value;
+      });
+      original.replaceWith(select);
+    }
+
+    async function makeVoiceSelect(context, key, allowEmpty = false) {
+      const select = document.createElement("select");
+      select.className = "enhanced-speech-voice-select";
+      fillVoiceSelect(select, await loadVoices(context.settings), context.settings[key] || "", allowEmpty);
+      select.addEventListener("change", () => {
+        context.settings[key] = select.value;
+      });
+      return select;
+    }
+
+    async function injectKokoroFields() {
+      for (const { modal, context } of getModalContexts()) {
+        if (context.pluginName !== "_kokoro_tts") continue;
+        guardContextSave(context);
+        const page = fieldPage(modal);
+        if (!page) continue;
+        ensureDefaults(context.settings, kokoroDefaults);
+        context.settings.remote_enabled = context.settings.device === "remote";
+        await enhancePrimaryVoiceField(page, context);
+        if (page.querySelector(".enhanced-speech-kokoro-fields")) continue;
+
+        const group = document.createElement("div");
+        group.className = "enhanced-speech-kokoro-fields";
+
+        const secondary = await makeVoiceSelect(context, "secondary_voice", true);
+        group.append(field("Secondary voice", "Optional Kokoro voice blended with the primary voice.", secondary));
+
+        const blend = bindInput(document.createElement("input"), context, "voice_blend", clampBlend);
+        blend.type = "range";
+        blend.min = "1";
+        blend.max = "99";
+        blend.step = "1";
+        const blendWrap = document.createElement("div");
+        const blendValue = document.createElement("span");
+        blendValue.className = "range-value";
+        const updateBlend = () => {
+          const value = clampBlend(context.settings.voice_blend);
+          blendValue.textContent = `${value}% / ${100 - value}%`;
+        };
+        blend.addEventListener("input", updateBlend);
+        updateBlend();
+        blendWrap.append(blend, blendValue);
+        group.append(field("Primary voice blend", "Percentage of the primary voice used when a secondary voice is set.", blendWrap));
+
+        const device = document.createElement("select");
+        const deviceOptions = [["auto", "Auto"], ["cpu", "CPU"]];
+        if (cudaAvailable) deviceOptions.push(["cuda", "GPU"]);
+        deviceOptions.push(["remote", "Remote GPU worker"]);
+        for (const [value, label] of deviceOptions) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          device.append(option);
+        }
+        bindInput(device, context, "device");
+        if (!cudaAvailable && context.settings.device === "cuda") context.settings.device = "auto";
+        device.value = context.settings.device || "auto";
+        device.addEventListener("change", () => {
+          context.settings.remote_enabled = device.value === "remote";
+        });
+        group.append(field("Mode", "Backend target used by enhanced Kokoro synthesis.", device));
+
+        const remoteUrl = bindInput(document.createElement("input"), context, "remote_url");
+        remoteUrl.type = "text";
+        remoteUrl.placeholder = "http://kokoro-gpu-worker:8891";
+        group.append(field("Remote URL", "Remote worker base URL used when remote mode is enabled.", remoteUrl));
+
+        const remoteToken = bindInput(document.createElement("input"), context, "remote_token");
+        remoteToken.type = "password";
+        remoteToken.autocomplete = "off";
+        group.append(field("Remote token", "Optional bearer token for the remote worker.", remoteToken));
+
+        const remoteTimeout = bindInput(document.createElement("input"), context, "remote_timeout", (value) => Math.max(1, Number(value) || 20));
+        remoteTimeout.type = "number";
+        remoteTimeout.min = "1";
+        remoteTimeout.step = "1";
+        group.append(field("Remote timeout", "Timeout in seconds for remote worker requests.", remoteTimeout));
+
+        const workerRow = document.createElement("div");
+        workerRow.className = "enhanced-speech-worker-test";
+        const workerButton = document.createElement("button");
+        workerButton.type = "button";
+        workerButton.className = "btn btn-field";
+        workerButton.textContent = "Test worker";
+        const workerStatus = document.createElement("span");
+        workerStatus.className = "enhanced-speech-worker-status";
+        workerButton.addEventListener("click", async () => {
+          workerStatus.textContent = "Checking...";
+          const result = await callJson("/plugins/_enhanced_speech/worker", context.settings).catch((error) => ({ success: false, error: error?.message || String(error) }));
+          workerStatus.textContent = result?.success
+            ? `Connected: ${result.url}${result.device ? ` (${result.device})` : ""}`
+            : (result?.error || "Worker unavailable");
+        });
+        workerRow.append(workerButton, workerStatus);
+        group.append(field("Worker status", "Check the configured sidecar or fallback worker aliases.", workerRow));
+
+        const speedTitle = Array.from(page.querySelectorAll(".field-title"))
+          .find((title) => title.textContent.trim().toLowerCase() === "speed");
+        const speedField = speedTitle?.closest(".field");
+        const primaryField = page.querySelector(".enhanced-speech-primary-voice")?.closest(".field");
+        if (speedField) group.insertBefore(speedField, group.children[2] || null);
+        primaryField?.insertAdjacentElement("afterend", group);
+        if (!group.isConnected) page.append(group);
+        page.__enhancedSpeechKokoroPatched = true;
+      }
+    }
+
+    function markWhisperFields() {
+      for (const { modal, context } of getModalContexts()) {
+        if (context.pluginName !== "_whisper_stt") continue;
+        guardContextSave(context);
+        ensureDefaults(context.settings, whisperDefaults);
+        const page = fieldPage(modal);
+        if (page && !page.querySelector(".enhanced-speech-whisper-note")) {
+          const note = document.createElement("div");
+          note.className = "section-description enhanced-speech-whisper-note";
+          note.textContent = "Enhanced Speech syncs these STT settings with the backend speech adapter.";
+          page.append(note);
+        }
+      }
+    }
+
+    function modeLabel(config) {
+      const device = (config?.device || "auto").toString().toLowerCase();
+      if (device === "remote") return "Remote GPU worker";
+      if (config?.effective_device_label) return config.effective_device_label;
+      if (device === "cuda") return "GPU";
+      if (device === "cpu") return "CPU";
+      return "Auto";
+    }
+
+    function voiceSummary(config) {
+      const primary = config?.voice || config?.primary_voice || "";
+      const secondary = config?.secondary_voice || "";
+      if (!secondary) return primary;
+      return `${primary} + ${secondary}`;
+    }
+
+    function patchKokoroStore() {
+      const store = globalThis.Alpine?.store?.("kokoroTts");
+      if (!store) return;
+      guardConfigOpen(store, "_kokoro_tts");
+      if (store.__agentspineEnhancedSpeechPatched) return;
+      store.__agentspineEnhancedSpeechPatched = true;
+      const originalRefreshStatus = store.refreshStatus?.bind(store);
+      if (originalRefreshStatus) {
+        store.refreshStatus = async function(...args) {
+          await originalRefreshStatus(...args);
+          try {
+            const status = await callJson("/plugins/_kokoro_tts/status", {});
+            if (status?.config) this.config = { ...(this.config || {}), ...status.config };
+          } catch {}
+          scheduleRefresh();
+        };
+      }
+      Object.defineProperty(store, "enhancedVoiceSummary", {
+        configurable: true,
+        get() { return voiceSummary(this.config || {}); },
+      });
+      Object.defineProperty(store, "enhancedModeLabel", {
+        configurable: true,
+        get() { return modeLabel(this.config || {}); },
+      });
+      store.__agentspineEnhancedHydration = callJson("/plugins/_kokoro_tts/status", {})
+        .then((status) => {
+          if (status?.config) store.config = { ...(store.config || {}), ...status.config };
+          scheduleRefresh();
+        })
+        .catch(() => {});
+    }
+
+    function patchWhisperStore() {
+      guardConfigOpen(globalThis.Alpine?.store?.("whisperStt"), "_whisper_stt");
+    }
+
+    function ensureCardRows() {
+      patchKokoroStore();
+      const store = globalThis.Alpine?.store?.("kokoroTts");
+      const cards = Array.from(document.querySelectorAll(".voice-plugin-card"))
+        .filter((card) => card.textContent.includes("Kokoro TTS"));
+      for (const card of cards) {
+        const meta = card.querySelector(".voice-plugin-meta");
+        if (!meta) continue;
+        meta.querySelector(".enhanced-speech-card-voices")?.remove();
+        if (!meta.querySelector(".enhanced-speech-card-mode")) {
+          const row = document.createElement("div");
+          row.className = "voice-plugin-meta-row enhanced-speech-card-mode";
+          row.innerHTML = "<span>Mode</span><span></span>";
+          meta.append(row);
+        }
+        const voiceRow = Array.from(meta.querySelectorAll(".voice-plugin-meta-row"))
+          .find((row) => row.querySelector("span")?.textContent?.trim() === "Voice");
+        let voice = voiceRow?.querySelector(".enhanced-speech-card-voice");
+        if (voiceRow && !voice) {
+          const nativeValue = voiceRow.querySelector("code, span:last-child");
+          voice = document.createElement("code");
+          voice.className = "enhanced-speech-card-voice";
+          nativeValue?.replaceWith(voice);
+        }
+        const mode = meta.querySelector(".enhanced-speech-card-mode span:last-child");
+        if (voice) voice.textContent = store?.enhancedVoiceSummary || "";
+        if (mode) mode.textContent = store?.enhancedModeLabel || "Auto";
+      }
+    }
+
+    async function refresh() {
+      if (refreshRunning) {
+        refreshAgain = true;
+        return;
+      }
+      refreshRunning = true;
+      patchSpeechStream();
+      patchKokoroStore();
+      patchWhisperStore();
+      ensureCardRows();
+      try {
+        await injectKokoroFields();
+        markWhisperFields();
+        ensureCardRows();
+      } finally {
+        refreshRunning = false;
+        if (refreshAgain) {
+          refreshAgain = false;
+          scheduleRefresh();
+        }
+      }
+    }
+
+    function scheduleRefresh() {
+      if (refreshScheduled) return;
+      refreshScheduled = true;
+      window.requestAnimationFrame(() => {
+        refreshScheduled = false;
+        refresh();
+      });
+    }
+
+    const style = document.createElement("style");
+    style.id = "agentspine-enhanced-speech-style";
+    style.textContent = `
+      .enhanced-speech-voice-select {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid color-mix(in srgb, var(--color-border, #777) 68%, #4aa3ff 32%);
+        border-radius: 6px;
+        background: var(--color-input, #17191c);
+        color: var(--color-text, #f1f3f5);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.82rem;
+        font-weight: 600;
+        padding: 7px 32px 7px 10px;
+      }
+      .enhanced-speech-voice-select:focus {
+        border-color: #4aa3ff;
+        box-shadow: 0 0 0 2px rgba(74, 163, 255, 0.18);
+        outline: none;
+      }
+      .enhanced-speech-voice-select option { font-weight: 500; }
+      .enhanced-speech-worker-status { margin-left: 10px; color: var(--color-text-secondary, #aeb4bc); }
+      .enhanced-speech-kokoro-fields .field { border-top-color: rgba(74, 163, 255, 0.14); }
+    `;
+    if (!document.getElementById(style.id)) document.head.append(style);
+
+    document.addEventListener("alpine:init", () => setTimeout(scheduleRefresh, 0));
+    document.addEventListener("DOMContentLoaded", scheduleRefresh, { once: true });
+    document.addEventListener("alpine:init", () => setTimeout(ensureSpeechStreamPatch, 0));
+    if (document.readyState !== "loading") setTimeout(ensureSpeechStreamPatch, 0);
+    scheduleRefresh();
+    new MutationObserver((mutations) => {
+      patchSpeechStream();
+      if (!mutations.some((mutation) => Array.from(mutation.addedNodes || []).some((node) => {
+        if (node.nodeType !== 1) return false;
+        return node.matches?.(".modal, .voice-plugin-card, .plugin-config-page")
+          || node.querySelector?.(".modal, .voice-plugin-card, .plugin-config-page");
+      }))) return;
+      scheduleRefresh();
+    }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+  })();
+</script>

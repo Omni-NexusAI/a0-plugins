@@ -1,90 +1,84 @@
-# Enhanced Speech
+# _enhanced_speech
 
-Built-in Agentspine speech enhancement plugin.
-
-This directory is copied from the `agentspine-gpu-pre` container state synced on
-2026-06-15. The manifest version is `0.9.9` and the installed plugin name is
-`_enhanced_speech`.
+Agentspine built-in speech compatibility overlay for Agent Zero v1.20.
 
 ## Purpose
 
-`_enhanced_speech` improves speech behavior for Agentspine runtimes without
-editing the host runtime directly. In this container state it focuses on:
+This plugin keeps Agentspine speech behavior compatible with the split v1.20
+Voice UI. Kokoro TTS and Whisper STT remain separate frontend providers, while
+this overlay supplies the backend compatibility layer for enhanced TTS and STT
+settings.
 
-- discovering and defaulting to a remote Kokoro worker when appropriate;
-- exposing a `remote` TTS device option when a worker is reachable/configured;
-- applying remote TTS defaults during startup and settings reads;
-- replacing the WebUI microphone recorder with a silence-aware recorder that
-  filters tiny recordings before transcription.
+## Built-In Source And Config
 
-## Design
+- Built-in source: `/a0/plugins/_enhanced_speech`
+- User config/state: `/a0/usr/plugins/_enhanced_speech/config.json`
+- Kokoro sync target: `/a0/usr/plugins/_kokoro_tts/config.json`
+- Whisper sync target: `/a0/usr/plugins/_whisper_stt/config.json`
 
-The plugin has one shared backend helper:
+The plugin should be baked as an underscore built-in overlay. Do not enable a
+duplicate non-underscore `enhanced_speech` custom plugin beside it.
 
-- `helpers/remote_tts.py` owns URL normalization, remote worker detection,
-  runtime settings defaults, device-option injection, and idempotent host
-  patching.
-- `helpers/overlay.py` owns applying container-copied core files from
-  `overrides/a0`.
+## Runtime Hooks
 
-Two Python extension hooks load that same helper:
+- `agent_init` patches `_kokoro_tts.helpers.runtime` for enhanced synthesis.
+- API handlers expose voice discovery, worker status, config sync, and speech
+  adapter behavior.
+- Page-head UI patch extends Kokoro and Whisper provider-specific settings
+  surfaces without creating a combined speech panel.
+- The page-head adapter also patches the v1.20 speech stream after store
+  registration so completed sentence tails are released before response end.
+  Cold-start registration is retried for up to two minutes and does not depend
+  on opening Voice settings; later chat DOM insertion also triggers an
+  idempotent patch attempt.
 
-- `extensions/python/agent_init/_10_enhanced_speech.py`
-- `extensions/python/startup_migration/_05_enhanced_speech_remote_tts.py`
+## Behavior
 
-The duplicate entry points make the patch available during normal agent startup
-and during startup migration flows without duplicating behavior.
+- Kokoro settings include styled primary and secondary voice dropdowns, blend
+  ratio, speed, compute mode, remote URL/token/timeout, and worker test.
+- Compute mode is authoritative. `Remote GPU worker` enables delegation; there
+  is no second remote-enable checkbox. The in-container `GPU` choice appears
+  only when `torch.cuda.is_available()` is true.
+- The Kokoro card keeps one `Voice` row. It displays the primary voice normally
+  or `primary + secondary` for a synthesized voice, followed by a separate mode
+  row.
+- Worker URL normalization supports `kokoro-gpu-worker:8891`,
+  `agentspine-kokoro-gpu:8891`, and `host.docker.internal:51101`.
+- Known sidecar aliases prefer `agentspine-kokoro-gpu:8891` and cache the last
+  successful endpoint so a stale alias does not delay every synthesis request.
+- Whisper settings remain separate and sync model size, language, message mode,
+  silence threshold, silence duration, and waiting timeout.
+- Stable sentence tails are synthesized immediately while unfinished text is
+  retained. A private held sentinel is never sent to Kokoro, preventing
+  duplicated or truncated speech as streamed text grows.
+- The v1.20 `ttsService` provider path prefetches the next sentence while the
+  current sentence plays and removes artificial inter-part sleeps. CPU and
+  remote modes therefore share the same gapless playback queue.
+- Backend notifications report local model loading/success/failure and remote
+  worker state transitions. Successful settings saves report voice, blend, and
+  speed changes.
+- Kokoro and Whisper settings use single-flight open/save guards so rapid clicks
+  cannot create duplicate plugin-settings modals or submit the same config twice.
 
-The WebUI hook lives in:
+## Compatibility Notes
 
-- `extensions/webui/initFw_end/enhanced-stt-recorder.js`
+- Target runtime: Agent Zero `M v1.20` with Agentspine
+  `v0.9.9-standard-pre`.
+- Health metadata must remain truthful to upstream Agent Zero.
+- Frontend observers must be scoped and debounced so opening Settings does not
+  recursively refresh the modal.
 
-It imports the speech and microphone setting stores, replaces
-`speechStore.initMicrophone`, and creates an `EnhancedMicrophoneInput` that
-tracks explicit recorder states.
+## Test Checklist
 
-The live GPU container also carries remote Kokoro behavior in core helper,
-settings, and speech settings UI files. This plugin vendors those files under
-`overrides/a0` so another A0/AS instance can receive the same runtime support:
-
-- `overrides/a0/helpers/build_type.py`
-- `overrides/a0/helpers/kokoro_tts.py`
-- `overrides/a0/helpers/settings.py`
-- `overrides/a0/webui/components/settings/agent/speech.html`
-
-## Function
-
-Remote TTS URL detection uses this precedence:
-
-1. settings keys: `tts_kokoro_remote_url`, `kokoro_remote_url`,
-   `tts_remote_url`;
-2. environment keys: `A0_TTS_KOKORO_REMOTE_URL`,
-   `A0_SET_TTS_KOKORO_REMOTE_URL`, `KOKORO_WORKER_URL`,
-   `KOKORO_GPU_WORKER_URL`, `A0_TTS_REMOTE_URL`;
-3. default worker `http://kokoro-gpu-worker:8891`, but only when remote TTS is
-   enabled by environment or the build type is `HYBRID_GPU`.
-
-When a remote worker is detected, runtime settings are defaulted to enable
-Kokoro TTS and prefer the `remote` device unless the user already selected a
-non-auto/non-CPU device.
-
-The STT recorder uses `MediaRecorder`, browser audio analysis, silence
-thresholds from `speechStore`, and `/transcribe` API calls. It ignores recordings
-smaller than `256` bytes, filters bracket-only transcription artifacts, and
-returns to listening after each processing pass.
-
-## Current Limits
-
-This synced container version does not include the older rich voice dropdown
-HTML/CSS. If that UI needs to be restored, implement it deliberately and update
-`AGENTS.md`, this README, and the WebUI verification notes together.
-
-## Verification
-
-- Parse the Python files after backend changes.
-- Verify override files still match the intended container/source behavior.
-- In a compatible runtime, confirm the `remote` TTS device appears only when a
-  configured or expected worker is available.
-- In the WebUI, verify microphone permission failure, silence detection,
-  transcription submission, tiny-recording filtering, and return-to-listening
-  behavior.
+- Compile plugin Python files.
+- Open Settings and Voice repeatedly without UI freeze or console errors.
+- Confirm Kokoro and Whisper remain separate cards.
+- Confirm Kokoro dropdowns/settings save and reload.
+- On standard-pre, confirm Auto, CPU, and Remote GPU worker are present and the
+  local GPU option is absent. On GPU-pre, confirm GPU is present.
+- Confirm Whisper settings save and reload.
+- Verify primary-only, blended, and remote-worker Kokoro synthesis.
+- Verify the first complete streamed sentence reaches synthesis before the
+  response finishes, with no duplicate speech after later chunks arrive.
+- Confirm model, worker, voice, blend, and speed notifications appear once per
+  relevant state transition.

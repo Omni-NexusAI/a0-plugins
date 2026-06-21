@@ -1,12 +1,22 @@
 from helpers.extension import Extension
-from plugins._agentspine_identity.helpers.identity import apply_identity_text
+
+try:
+    from plugins._agentspine_identity.helpers.identity import get_identity_config
+except Exception:
+    from usr.plugins._agentspine_identity.helpers.identity import get_identity_config
 
 
 class AgentspineIdentityBanners(Extension):
     async def execute(self, banners: list = [], frontend_context: dict = {}, **kwargs):
-        for banner in banners:
-            if isinstance(banner, dict):
-                for key in ("title", "html", "message"):
-                    if key in banner and isinstance(banner[key], str):
-                        banner[key] = apply_identity_text(banner[key])
-
+        cfg = get_identity_config()
+        banners.append(
+            {
+                "id": "agentspine-identity",
+                "type": "info",
+                "priority": 1,
+                "title": str(cfg.get("product_name") or "Agentspine"),
+                "html": "Agentspine overlay plugins are active on this Agent Zero-compatible runtime.",
+                "dismissible": True,
+                "source": "backend",
+            }
+        )

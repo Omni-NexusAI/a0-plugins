@@ -16,6 +16,8 @@
 
 ## Local Contracts
 
+- Built-in source is `/a0/plugins/_agentspine_identity`; runtime configuration is `/a0/usr/plugins/_agentspine_identity/config.json`.
+- Target compatibility is A0 `M v1.20` with Agentspine `v0.9.9-standard-pre`; never rewrite `/api/health` metadata.
 - Preserve protected phrases such as `Agent Zero Venice`.
 - Keep Python and WebUI replacement tables aligned when adding or changing identity strings.
 - Keep release-tag behavior aligned between `default_config.yaml`, `helpers/identity.py`, and the index/page-head hooks.

@@ -2,25 +2,24 @@
 
 ## Purpose
 
-`_multi_source_updater` is the built-in Agentspine updater enhancement plugin synced from the GPU-pre container. The container behavior lives in core helper/settings/WebUI files, so this plugin vendors those files under `overrides/a0` and applies them at startup.
+`_multi_source_updater` is the built-in source-aware updater compatibility layer for A0 v1.20 and Agentspine v0.9.9-standard-pre.
 
 ## Ownership
 
 - `plugin.yaml` owns plugin identity, version `0.9.9`, always-enabled behavior, and `backup` settings-section placement.
 - `README.md` owns the intended updater behavior: selectable update source, persisted source, and Agentspine compatibility display behavior.
-- `extensions/python/agent_init/_10_multi_source_updater.py` owns startup application of the override payload.
-- `helpers/overlay.py` owns copying changed override files into the runtime root.
-- `overrides/a0/helpers/self_update.py` owns source-aware updater behavior copied from the container.
-- `overrides/a0/helpers/settings.py` owns the `self_update_source` setting and updater cache invalidation copied from the container.
-- `overrides/a0/webui/components/settings/external/` owns the update-source UI copied from the container.
-- `webui/thumbnail.svg` owns the plugin thumbnail asset.
+- `helpers/source.py` owns source selection, source-keyed branch/tag caches, Agentspine effective-version behavior, and pending update payloads.
+- `api/source.py` owns reading and persisting the selected update source.
+- `extensions/python/agent_init/_10_multi_source_updater.py` owns runtime updater patch installation.
+- `extensions/python/startup_migration/_10_multi_source_updater.py` owns config migration.
+- `extensions/webui/page-head/_10_multi_source_updater.html` owns the source selector and source-aware refresh behavior.
 
 ## Local Contracts
 
-- Treat `overrides/a0` as the container-synced behavior payload.
 - Keep the manifest name `_multi_source_updater` aligned with the installed directory name.
-- Future updater behavior must preserve existing settings and avoid forcing a source switch without explicit user intent.
-- Do not edit copied override files without checking the matching container/source behavior or intentionally upgrading the plugin.
+- Keep upstream health/version metadata truthful; the `v0.9.9-standard-pre` effective version applies only to the Agentspine source.
+- Scheduled update payloads must preserve source, remote URL, branch, tag, build flavor, and effective Agentspine version.
+- Source changes must invalidate only the matching source caches and must not force a source switch without explicit user intent.
 
 ## Work Guidance
 
@@ -30,8 +29,9 @@
 
 ## Verification
 
-- Parse touched Python files, including override helper files.
-- For future behavior changes, verify source selection persistence, display labels, fallback behavior, and unsupported host behavior.
+- Parse plugin Python and page-head JavaScript.
+- Verify Agentspine and upstream source switching, source-keyed branches/tags, source persistence, and dry-run payload metadata.
+- Confirm Agentspine reports `v0.9.9-standard-pre` as effective current/latest while `/api/health` remains truthful `M v1.20`.
 
 ## Child DOX Index
 

@@ -1,7 +1,12 @@
 name: _enhanced_mcp_config
 title: Enhanced MCP Configurator
-description: Adds Agentspine MCP server toggle and refined MCP configuration behavior.
+description: >
+  Normalizes missing disabled flags in MCP server entries and adds reliable toggle
+  support. Patches the MCP configuration store so every server has an explicit state —
+  no more broken toggles when entries lack a disabled field.
 version: 0.9.9
-always_enabled: true
 settings_sections:
   - mcp
+always_enabled: true
+per_project_config: false
+per_agent_config: false

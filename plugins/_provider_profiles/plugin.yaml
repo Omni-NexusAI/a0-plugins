@@ -1,0 +1,13 @@
+name: _provider_profiles
+title: Provider Profiles
+description: Portable provider-specific model profiles and local-provider defaults for the A0 model configurator.
+version: 0.9.9
+settings_sections:
+  - agent
+always_enabled: true
+per_project_config: false
+per_agent_config: false
+tags:
+  - models
+  - configuration
+  - providers

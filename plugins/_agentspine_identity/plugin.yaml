@@ -1,5 +1,9 @@
 name: _agentspine_identity
-title: Agentspine Identity Module
-description: Agentspine identity overlay for A0-compatible branding and release banner behavior.
-version: 0.9.9
+title: Agentspine Identity
+description: Restores Agentspine display identity while preserving underlying Agent Zero version metadata.
+version: 1.0.0
+settings_sections:
+  - agent
 always_enabled: true
+per_project_config: false
+per_agent_config: false
