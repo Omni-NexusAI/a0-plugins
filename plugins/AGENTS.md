@@ -38,7 +38,7 @@
 ## Child DOX Index
 
 - `_agentspine_identity/AGENTS.md`: Agentspine product identity overlay, greeting, banner, title, and version display.
-- `_enhanced_mcp_config/AGENTS.md`: MCP settings UI, disabled flag handling, status/apply/toggle API handlers, and override payload copied from the GPU-pre container.
-- `_enhanced_speech/AGENTS.md`: remote Kokoro TTS support, speech settings UI, detection/defaults, and enhanced STT recorder patch.
-- `_multi_source_updater/AGENTS.md`: source-aware self-update helper/settings/UI override payload copied from the GPU-pre container.
-- `provider_profiles/AGENTS.md`: portable provider-aware model, API base, and context-length restore behavior mirroring the GPU-pre container's `_model_config`.
+- `_enhanced_mcp_config/AGENTS.md`: plugin-local MCP settings UI, JSON handling, status, and single-server toggle behavior.
+- `_enhanced_speech/AGENTS.md`: split Kokoro/Whisper compatibility, early stream delivery, remote Kokoro support, and speech notifications.
+- `_multi_source_updater/AGENTS.md`: source-aware branch/tag lookup, source persistence, scheduled update payloads, and Agentspine compatibility versioning.
+- `_provider_profiles/AGENTS.md`: provider-aware model slot capture and restore, including LM Studio and Ollama defaults.

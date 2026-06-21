@@ -1,0 +1,271 @@
+<script>
+  (() => {
+    if (globalThis.__agentspineProviderProfilesInstalled) return;
+    globalThis.__agentspineProviderProfilesInstalled = true;
+
+    const pluginName = "_provider_profiles";
+    const schemaVersion = 2;
+    const historyKey = "modelConfig_providerHistory";
+    const slots = ["chat_model", "utility_model", "embedding_model"];
+    const localDefaults = {
+      lm_studio: "http://host.docker.internal:1234/v1",
+      ollama: "http://host.docker.internal:11434",
+    };
+    const localUrls = new Set(Object.values(localDefaults));
+    let history = migrateHistory(readLocalHistory());
+    let backendPromise = null;
+    let saveTimer = null;
+
+    function clone(value) {
+      try { return JSON.parse(JSON.stringify(value || {})); } catch { return {}; }
+    }
+
+    function providerId(value) {
+      return (value || "").toString().trim().toLowerCase();
+    }
+
+    function profileKey(slot, provider) {
+      return `${slot}_${providerId(provider)}`;
+    }
+
+    function splitLegacyKey(key) {
+      const raw = String(key || "");
+      for (const slot of slots) {
+        for (const separator of [":", "_"]) {
+          const prefix = `${slot}${separator}`;
+          if (raw.startsWith(prefix)) return [slot, providerId(raw.slice(prefix.length))];
+        }
+      }
+      return ["", ""];
+    }
+
+    function migrateHistory(raw) {
+      const migrated = {};
+      for (const [key, value] of Object.entries(raw && typeof raw === "object" ? raw : {})) {
+        const [slot, provider] = splitLegacyKey(key);
+        if (!slot || !provider || !value || typeof value !== "object") continue;
+        migrated[profileKey(slot, provider)] = { ...clone(value), provider };
+      }
+      return migrated;
+    }
+
+    function readLocalHistory() {
+      try { return JSON.parse(localStorage.getItem(historyKey) || "{}"); } catch { return {}; }
+    }
+
+    function persistLocal() {
+      try { localStorage.setItem(historyKey, JSON.stringify(history)); } catch {}
+    }
+
+    function snapshot(model, providerOverride = "") {
+      const clean = clone(model);
+      for (const key of Object.keys(clean)) {
+        if (key.startsWith("_")) delete clean[key];
+      }
+      clean.provider = providerId(providerOverride || clean.provider);
+      clean.name = clean.name || "";
+      clean.api_base = clean.api_base || "";
+      return clean;
+    }
+
+    function capture(slot, model, providerOverride = "", persist = true) {
+      const provider = providerId(providerOverride || model?.provider);
+      if (!slots.includes(slot) || !model || !provider) return;
+      history[profileKey(slot, provider)] = snapshot(model, provider);
+      if (persist) writeHistory();
+    }
+
+    function restore(slot, model, provider) {
+      const nextProvider = providerId(provider);
+      if (!model || !nextProvider) return;
+      const saved = history[profileKey(slot, nextProvider)];
+      const previousBase = String(model.api_base || "").trim();
+
+      if (saved) {
+        Object.assign(model, clone(saved), { provider: nextProvider });
+      } else {
+        model.provider = nextProvider;
+        model.name = "";
+        model.api_base = localDefaults[nextProvider] || (localUrls.has(previousBase) ? "" : previousBase);
+      }
+
+      if (nextProvider in localDefaults && !String(model.api_base || "").trim()) {
+        model.api_base = localDefaults[nextProvider];
+      } else if (!(nextProvider in localDefaults) && localUrls.has(model.api_base || "")) {
+        model.api_base = saved?.api_base || "";
+      }
+    }
+
+    function applyLocalDefault(model, provider = model?.provider) {
+      const normalized = providerId(provider);
+      if (!model || !(normalized in localDefaults)) return "";
+      if (!String(model.api_base || "").trim()) model.api_base = localDefaults[normalized];
+      return model.api_base;
+    }
+
+    function hydrateLocalDefaults(config) {
+      for (const slot of slots) applyLocalDefault(config?.[slot]);
+    }
+
+    async function fetchApi() {
+      return (await import("/js/api.js")).fetchApi;
+    }
+
+    async function loadBackend() {
+      if (backendPromise) return backendPromise;
+      backendPromise = (async () => {
+        try {
+          const request = await fetchApi();
+          const response = await request("/plugins", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "get_config", plugin_name: pluginName }),
+          });
+          const result = await response.json();
+          const remote = migrateHistory(result?.ok ? result?.data?.profiles : {});
+          history = { ...remote, ...history };
+          persistLocal();
+        } catch (error) {
+          console.warn("Provider Profiles: backend profile load failed", error);
+        }
+        syncStoreHistory();
+        return history;
+      })();
+      return backendPromise;
+    }
+
+    function scheduleBackendSave() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        try {
+          const request = await fetchApi();
+          await request("/plugins", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "save_config",
+              plugin_name: pluginName,
+              settings: { schema_version: schemaVersion, profiles: history },
+            }),
+          });
+        } catch (error) {
+          console.warn("Provider Profiles: backend profile save failed", error);
+        }
+      }, 180);
+    }
+
+    function writeHistory() {
+      persistLocal();
+      syncStoreHistory();
+      scheduleBackendSave();
+    }
+
+    function syncStoreHistory() {
+      const store = globalThis.Alpine?.store?.("modelConfig");
+      if (store) store._providerModelHistory = history;
+    }
+
+    function slotFromSelect(select) {
+      const section = select?.closest?.(".model-section");
+      const title = section?.querySelector?.(".section-title")?.textContent?.trim().toLowerCase();
+      return {
+        "main model": "chat_model",
+        "utility model": "utility_model",
+        "embedding model": "embedding_model",
+      }[title] || "";
+    }
+
+    function patchStore() {
+      const store = globalThis.Alpine?.store?.("modelConfig");
+      if (!store || store.__agentspineProviderProfilesPatched) return false;
+      store.__agentspineProviderProfilesPatched = true;
+      store._providerModelHistory = history;
+      store._HISTORY_LS_KEY = historyKey;
+      store.providerApiBaseDefaults = { ...localDefaults };
+      store.getProviderApiBaseDefault = (provider) => localDefaults[providerId(provider)] || "";
+      store.applyProviderApiBaseDefault = (model, provider) => applyLocalDefault(model, provider);
+
+      store.onProviderChanged = function(sectionKey, model, oldProvider, outgoingSnapshot = null) {
+        const slot = slots.includes(sectionKey) ? sectionKey : `${sectionKey || "chat"}_model`;
+        const previousProvider = providerId(oldProvider);
+        const nextProvider = providerId(model?.provider);
+        if (!model || !nextProvider || nextProvider === previousProvider) return;
+
+        const outgoing = outgoingSnapshot || (previousProvider ? snapshot(model, previousProvider) : null);
+        if (outgoing) history[profileKey(slot, previousProvider)] = outgoing;
+        restore(slot, model, nextProvider);
+        writeHistory();
+      };
+
+      const originalSearchDetailed = store.searchModelsDetailed?.bind(store);
+      if (originalSearchDetailed) {
+        store.searchModelsDetailed = function(provider, query, modelType, apiBase) {
+          const normalized = providerId(provider);
+          return originalSearchDetailed(provider, query, modelType, apiBase || localDefaults[normalized] || "");
+        };
+      }
+
+      const originalInstall = store.installSettingsHooks?.bind(store);
+      if (originalInstall) {
+        store.installSettingsHooks = function(context, ...args) {
+          const result = originalInstall(context, ...args);
+          this.__agentspineSettingsContext = context;
+          hydrateLocalDefaults(context?.settings);
+          if (context && !context.__agentspineProviderSaveHook) {
+            context.__agentspineProviderSaveHook = true;
+            const originalSave = context.save?.bind(context);
+            if (originalSave) {
+              context.save = async (...saveArgs) => {
+                if (context.__agentspineProviderSaveInFlight) return;
+                context.__agentspineProviderSaveInFlight = true;
+                clearTimeout(saveTimer);
+                const activeProfiles = {};
+                for (const slot of slots) {
+                  const model = context.settings?.[slot];
+                  const provider = providerId(model?.provider);
+                  if (model && provider) activeProfiles[profileKey(slot, provider)] = snapshot(model, provider);
+                }
+                try {
+                  const result = await originalSave(...saveArgs);
+                  if (!context.error) Object.assign(history, activeProfiles);
+                  writeHistory();
+                  return result;
+                } finally {
+                  context.__agentspineProviderSaveInFlight = false;
+                }
+              };
+            }
+          }
+          return result;
+        };
+      }
+
+      loadBackend();
+      return true;
+    }
+
+    function initialize() {
+      if (!patchStore()) setTimeout(initialize, 100);
+    }
+
+    document.addEventListener("change", (event) => {
+      const select = event.target?.closest?.('select[x-model="model.provider"]');
+      if (!select) return;
+      const store = globalThis.Alpine?.store?.("modelConfig");
+      const slot = slotFromSelect(select);
+      const model = store?.__agentspineSettingsContext?.settings?.[slot];
+      const oldProvider = providerId(model?.provider);
+      const newProvider = providerId(select.value);
+      if (!slot || !model || !newProvider || newProvider === oldProvider) return;
+      const outgoing = snapshot(model, oldProvider);
+      queueMicrotask(() => {
+        model.provider = newProvider;
+        store.onProviderChanged(slot, model, oldProvider, outgoing);
+      });
+    }, true);
+
+    document.addEventListener("alpine:init", () => setTimeout(initialize, 0));
+    document.addEventListener("DOMContentLoaded", initialize, { once: true });
+    if (document.readyState !== "loading") setTimeout(initialize, 0);
+  })();
+</script>

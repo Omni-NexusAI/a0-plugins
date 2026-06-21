@@ -1,7 +1,9 @@
 name: _multi_source_updater
-title: Multi Source Updater
-description: Extends self-update with update source selection and Agentspine v0.9.9-pre compatibility behavior.
-version: 0.9.9
-always_enabled: true
+title: Agentspine Multi Source Updater
+description: Adds an Agentspine/upstream source selector to the self-update flow without editing core files.
+version: 1.0.0
 settings_sections:
-  - backup
+  - external
+always_enabled: true
+per_project_config: false
+per_agent_config: false

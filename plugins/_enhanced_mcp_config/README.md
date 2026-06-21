@@ -1,59 +1,60 @@
-# Enhanced MCP Configurator
+# _enhanced_mcp_config
 
-Built-in Agentspine MCP configuration enhancement plugin.
-
-This directory is synced from the `agentspine-gpu-pre` container state on
-2026-06-15. The manifest version is `0.9.9` and the installed plugin name is
-`_enhanced_mcp_config`.
+Agentspine built-in MCP configuration overlay for Agent Zero v1.20.
 
 ## Purpose
 
-The plugin provides the Agentspine MCP settings enhancement boundary:
+This plugin restores Agentspine MCP quality-of-life controls on top of the
+v1.20 `mcpServersStore`: reliable enable/disable toggles and safe JSON
+normalization for server entries.
 
-- per-server enable/disable toggle controls;
-- refined MCP server status handling in settings;
-- safer apply/toggle update flow for MCP server configuration.
+## Built-In Source And Config
 
-## Design
+- Built-in source: `/a0/plugins/_enhanced_mcp_config`
+- User config/state: `/a0/usr/plugins/_enhanced_mcp_config/config.json`
+- MCP data target: the active Agent Zero MCP settings JSON managed by
+  `mcpServersStore`
 
-In the live GPU container, this behavior is baked into core API, helper, and
-WebUI files. The monorepo plugin vendors those files under `overrides/a0` and
-applies them on agent startup.
+The plugin is an underscore built-in overlay. Do not enable a duplicate
+non-underscore `enhanced_mcp_config` custom plugin beside it.
 
-- `extensions/python/agent_init/_10_enhanced_mcp_config.py` applies the override
-  payload and records changed files on the agent.
-- `helpers/overlay.py` copies changed files from `overrides/a0` into the runtime
-  root.
-- `overrides/a0/api/` contains the MCP status, apply, toggle, log, and detail
-  API handlers.
-- `overrides/a0/helpers/mcp_handler.py` contains the container MCP handler with
-  `disabled` server support.
-- `overrides/a0/helpers/settings.py` contains the container settings schema and
-  MCP reload behavior.
-- `overrides/a0/webui/components/settings/mcp/` contains the enhanced MCP
-  settings modal, status list, toggle UI, examples, log view, and detail view.
+## Runtime Hooks
 
-## Function
+- Page-head UI patch waits for `mcpServersStore`, patches store methods once,
+  and injects per-server toggles into MCP server rows.
+- Store patch normalizes every server entry to include an explicit boolean
+  `disabled` value before formatting or applying JSON.
 
-After startup applies the payload, the MCP modal behaves like the GPU container:
+## Behavior
 
-- every discovered server entry receives a `disabled` field if one is missing;
-- toggling a server updates the JSON editor immediately;
-- the status row reflects the disabled state immediately and marks disabled
-  servers disconnected;
-- the toggle is disabled while an apply operation is running;
-- toggles are applied through `mcp_servers_toggle`;
-- full config applies are normalized and sent through `mcp_servers_apply`;
-- status polling pauses during apply and restarts afterward.
+- Toggle controls call the plugin-local `toggle_server` API. It persists with
+  `apply=False` and mutates only the selected `MCPConfig` server.
+- Enabling initializes only the selected server; disabling removes only that
+  server from the active runtime list. Full JSON Apply remains the explicit
+  all-server reload operation.
+- Invalid JSON reports a parse error and leaves the existing configuration
+  intact.
+- Missing `disabled` fields are persisted as `false`; existing values are
+  coerced to booleans.
+- Server rows use the Agentspine green/gray switch treatment and keep log/tool
+  controls aligned in a dedicated action group.
+- Status refreshes re-read disabled state from the editor, so backend polling
+  cannot visually undo an unapplied or newly applied toggle.
 
-## Current Limits
+## Compatibility Notes
 
-The override payload intentionally matches the GPU container. It is more
-invasive than a pure WebUI extension because the behavior currently depends on
-core API handlers and helper files.
+- Target runtime: Agent Zero `M v1.20` with Agentspine
+  `v0.9.9-standard-pre`.
+- The page-head patch is guarded globally, patches the store once, and throttles
+  DOM work to one animation frame so Settings can open repeatedly without
+  accumulating status loops or duplicate controls.
 
-## Verification
+## Test Checklist
 
-- Parse the Python extension, helper, API handlers, and override Python files.
-- Test empty config, existing enabled servers, existing disabled servers,
-  unknown server keys, and unsupported host settings pages.
+- Compile plugin Python files.
+- Open Settings and MCP configuration without UI freeze.
+- Toggle at least one server off and on; confirm JSON updates and persists.
+- Confirm sibling server rows and backend connections do not reload during a
+  single-server toggle.
+- Enter invalid JSON and confirm the error is surfaced without losing config.
+- Reload Settings and confirm `disabled` values remain explicit booleans.

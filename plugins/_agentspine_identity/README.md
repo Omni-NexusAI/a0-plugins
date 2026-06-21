@@ -1,74 +1,44 @@
-# Agentspine Identity Module
+# _agentspine_identity
 
-Built-in identity overlay for Agentspine.
-
-This directory is copied from the `agentspine-gpu-pre` container state synced on
-2026-06-15. The manifest version is `0.9.9` and the installed plugin name is
-`_agentspine_identity`.
+Agentspine built-in identity overlay for Agent Zero v1.20.
 
 ## Purpose
 
-`_agentspine_identity` keeps the core application close to upstream Agent Zero
-while applying Agentspine product identity at runtime. It is always enabled in
-Agentspine builds and is not intended as a marketplace plugin.
+This plugin applies visible Agentspine branding and links while preserving the
+truthful upstream Agent Zero runtime identity exposed by health metadata.
 
-The overlay affects:
+## Built-In Source And Config
 
-- first-run assistant greeting text;
-- banners returned through the banner extension point;
-- served index HTML title and version bootstrap data;
-- browser-side document title, sidebar version label, visible text nodes, and
-  selected accessibility/title attributes.
+- Built-in source: `/a0/plugins/_agentspine_identity`
+- User config/state: `/a0/usr/plugins/_agentspine_identity/config.json`
 
-## Design
+The plugin is an underscore built-in overlay. Do not enable a duplicate custom
+identity plugin beside it.
 
-The Python helper `helpers/identity.py` is the shared identity engine. It owns:
+## Runtime Hooks
 
-- default product and release metadata;
-- lightweight YAML loading from `default_config.yaml`;
-- release-tag normalization;
-- timestamp formatting;
-- display-version formatting;
-- protected phrase handling;
-- Agent Zero to Agentspine text replacement.
+- Page-head and banner hooks patch visible UI labels and links.
+- Agent initialization hook exposes identity defaults to Agentspine-specific UI
+  surfaces.
+- Helper code keeps branding defaults such as release tag, repo URL, and banner
+  prefix separate from `/api/health`.
 
-Runtime hooks use that helper in separate surfaces:
+## Behavior
 
-- `extensions/python/agent_init/_10_initial_message.py` rewrites the initial
-  prompt message for the main agent when the conversation log is empty.
-- `extensions/python/banners/_95_agentspine_identity.py` rewrites banner title,
-  HTML, and message strings.
-- `extensions/python/_functions/helpers/ui_server/UiRouteHandlers/serve_index/end/_10_agentspine_index_identity.py`
-  rewrites served HTML title and `globalThis.gitinfo` version bootstrap data.
-- `extensions/webui/page-head/_10_agentspine_identity.html` applies browser-side
-  replacement after page load and later DOM mutations.
+- Shows Agentspine branding and Omni-NexusAI links where the overlay owns the UI.
+- Uses `v0.9.9-standard-pre` as the default standard-pre release tag.
+- Does not falsify upstream commit, tag, branch, or health version metadata.
 
-## Function
+## Compatibility Notes
 
-The default release banner is based on `default_config.yaml`:
+- Target runtime: Agent Zero `M v1.20` with Agentspine
+  `v0.9.9-standard-pre`.
+- Pre-release standard builds should identify as Agentspine standard-pre in UI
+  surfaces without rewriting Agent Zero health responses.
 
-- standard pre-release: `v0.9.9-standard-pre`
-- GPU pre-release: `v0.9.9-gpu-pre`
-- default banner prefix: `D`
+## Test Checklist
 
-The server-side index hook uses `BUILD_VARIANT=fullgpu` or `BUILD_VARIANT=gpu`
-to select the GPU pre-release tag; otherwise it uses the standard pre-release
-tag. Existing labels that already start with `D `, `M `, or `AS ` are preserved.
-
-The browser-side hook repeats identity replacement in the DOM, patches the
-Alpine sidebar version store when available, updates `globalThis.gitinfo`, and
-observes later DOM mutations so delayed UI content is also rewritten.
-
-## Guardrails
-
-The phrase `Agent Zero Venice` is protected and restored after replacement.
-Browser-side replacement skips `SCRIPT`, `STYLE`, `CODE`, `PRE`, `TEXTAREA`, and
-`INPUT` elements.
-
-## Verification
-
-- Parse the Python files after backend changes.
-- Verify the first-run greeting is branded only for agent `0` and only when the
-  context log is empty.
-- Verify document title, sidebar version, banners, and visible text are branded.
-- Verify protected phrases remain unchanged.
+- Compile plugin Python files.
+- Confirm `/api/health` still reports actual Agent Zero `M v1.20`.
+- Confirm visible Agentspine branding and links appear in the shell/header.
+- Confirm no console errors from identity page-head hooks.

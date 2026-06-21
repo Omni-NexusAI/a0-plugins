@@ -1,0 +1,144 @@
+<script>
+  (() => {
+    async function callPluginSource(payload) {
+      const api = await import("/js/api.js");
+      return api.callJsonApi("/plugins/_multi_source_updater/source", payload || {});
+    }
+
+    function patchStore() {
+      const store = globalThis.Alpine?.store?.("selfUpdateStore");
+      if (!store || store.__agentspineMultiSourcePatched) return;
+      store.__agentspineMultiSourcePatched = true;
+      store.form = store.form || {};
+      store.form.update_source = store.form.update_source || "omni-nexusai";
+
+      store.isAgentspineSource = function() {
+        return (this.form?.update_source || this.info?.active_update_source || "omni-nexusai") === "omni-nexusai";
+      };
+
+      store.parseAgentspineTag = function(value) {
+        const match = /^v(\d+)\.(\d+)(?:\.(\d+))?(?:-([a-z]+)(?:-(pre))?)?$/.exec((value || "").trim());
+        if (!match) return null;
+        const channel = match[4] || "";
+        const pre = match[5] === "pre" ? 0 : 1;
+        const channelRank = channel === "custom" ? 0 : channel === "standard" ? 1 : channel === "gpu" ? 2 : 3;
+        return [
+          Number.parseInt(match[1], 10),
+          Number.parseInt(match[2], 10),
+          Number.parseInt(match[3] || "0", 10),
+          channelRank,
+          pre,
+        ];
+      };
+
+      const originalParseSelectorTag = store.parseSelectorTag?.bind(store);
+      store.parseSelectorTag = function(value) {
+        if (this.isAgentspineSource?.()) {
+          return this.parseAgentspineTag(value);
+        }
+        return originalParseSelectorTag?.(value) || null;
+      };
+
+      const originalIsSupportedSelectorTag = store.isSupportedSelectorTag?.bind(store);
+      store.isSupportedSelectorTag = function(value) {
+        if (this.isAgentspineSource?.()) {
+          return !!this.parseAgentspineTag(value);
+        }
+        return originalIsSupportedSelectorTag?.(value) || false;
+      };
+
+      const originalCompareSelectorVersions = store.compareSelectorVersions?.bind(store);
+      store.compareSelectorVersions = function(left, right) {
+        if (!this.isAgentspineSource?.()) {
+          return originalCompareSelectorVersions?.(left, right) ?? null;
+        }
+        const a = this.parseAgentspineTag(left);
+        const b = this.parseAgentspineTag(right);
+        if (!a || !b) return null;
+        for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+          const diff = (a[i] || 0) - (b[i] || 0);
+          if (diff !== 0) return diff;
+        }
+        return 0;
+      };
+
+      const originalApplyFormState = store.applyFormState?.bind(store);
+      store.applyFormState = function(source) {
+        originalApplyFormState?.(source);
+        this.form.update_source = this.info?.active_update_source || this.form.update_source || "omni-nexusai";
+      };
+
+      const originalFetchTags = store.fetchTags?.bind(store);
+      store.fetchTags = async function() {
+        await callPluginSource({ update_source: this.form.update_source || "omni-nexusai" });
+        return originalFetchTags?.();
+      };
+
+      const originalScheduleUpdateRequest = store.scheduleUpdateRequest?.bind(store);
+      store.scheduleUpdateRequest = async function(payload, notificationMessage) {
+        return originalScheduleUpdateRequest?.({
+          ...(payload || {}),
+          update_source: this.form.update_source || this.info?.active_update_source || "omni-nexusai",
+        }, notificationMessage);
+      };
+
+      store.onUpdateSourceChanged = async function() {
+        this.error = "";
+        try {
+          const result = await callPluginSource({ update_source: this.form.update_source || "omni-nexusai" });
+          if (!result?.success) throw new Error(result?.error || "Failed to save update source.");
+          if (this.info) {
+            this.info.active_update_source = result.active_update_source;
+            this.info.update_sources = result.update_sources;
+          }
+          this.form.update_source = result.active_update_source || this.form.update_source;
+          await this.refresh();
+          this.form.branch = this.info?.defaults?.branch || this.form.branch || "main";
+          await this.fetchTags();
+        } catch (error) {
+          this.error = error?.message || "Failed to save update source.";
+        }
+      };
+    }
+
+    function injectControl() {
+      patchStore();
+      const store = globalThis.Alpine?.store?.("selfUpdateStore");
+      if (!store?.info?.update_sources?.length) return;
+      const advanced = document.querySelector("#self-update-advanced .self-update-panel + div, #self-update-advanced");
+      if (!advanced || document.querySelector(".agentspine-update-source-field")) return;
+      const branchField = Array.from(document.querySelectorAll("#self-update-advanced .field")).find((field) => field.textContent.includes("Target branch"));
+      if (!branchField?.parentElement) return;
+      const wrapper = document.createElement("div");
+      wrapper.className = "field agentspine-update-source-field";
+      wrapper.innerHTML = `
+        <div class="field-label">
+          <div class="field-title">Update source</div>
+          <div class="field-description">Choose whether self-update resolves versions from Agentspine or upstream Agent Zero.</div>
+        </div>
+        <div class="field-control">
+          <select></select>
+        </div>
+      `;
+      const select = wrapper.querySelector("select");
+      for (const src of store.info.update_sources || []) {
+        const option = document.createElement("option");
+        option.value = src.value;
+        option.textContent = src.label;
+        select.append(option);
+      }
+      select.value = store.form.update_source || store.info.active_update_source || "omni-nexusai";
+      select.addEventListener("change", () => {
+        store.form.update_source = select.value;
+        store.onUpdateSourceChanged?.();
+      });
+      branchField.parentElement.insertBefore(wrapper, branchField);
+    }
+
+    document.addEventListener("alpine:init", () => setTimeout(() => { patchStore(); injectControl(); }, 0));
+    document.addEventListener("DOMContentLoaded", () => { patchStore(); injectControl(); }, { once: true });
+    patchStore();
+    injectControl();
+    new MutationObserver(() => { patchStore(); injectControl(); }).observe(document.documentElement, { childList: true, subtree: true });
+  })();
+</script>

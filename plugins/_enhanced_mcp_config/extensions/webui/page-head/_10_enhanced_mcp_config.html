@@ -1,0 +1,278 @@
+<script>
+  (() => {
+    if (globalThis.__agentspineEnhancedMcpInstalled) return;
+    globalThis.__agentspineEnhancedMcpInstalled = true;
+    let refreshScheduled = false;
+
+    function normalizeName(name) {
+      return (name || "").toString().trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    }
+
+    function isServer(entry) {
+      return entry && typeof entry === "object" && !Array.isArray(entry)
+        && ["command", "args", "url", "serverUrl"].some((key) => key in entry);
+    }
+
+    function collectServers(root) {
+      const seen = new WeakSet();
+      const found = [];
+      function visit(value, key = "") {
+        if (!value || typeof value !== "object" || seen.has(value)) return;
+        seen.add(value);
+        if (isServer(value)) found.push({ entry: value, key });
+        if (Array.isArray(value)) value.forEach((item) => visit(item));
+        else Object.entries(value).forEach(([childKey, child]) => visit(child, childKey));
+      }
+      visit(root);
+      return found;
+    }
+
+    function parseConfig(raw) {
+      const parsed = raw?.trim() ? JSON.parse(raw) : {};
+      if (!parsed || typeof parsed !== "object") throw new Error("MCP config must be a JSON object or array.");
+      return parsed;
+    }
+
+    function normalizeConfig(raw) {
+      const parsed = parseConfig(raw);
+      for (const { entry } of collectServers(parsed)) entry.disabled = Boolean(entry.disabled);
+      return { parsed, formatted: JSON.stringify(parsed, null, 2) };
+    }
+
+    function findServer(root, name) {
+      const target = normalizeName(name);
+      for (const { entry, key } of collectServers(root)) {
+        const candidates = [key, entry.name, entry.displayName, entry.id].map(normalizeName).filter(Boolean);
+        if (candidates.includes(target)) return entry;
+      }
+      return null;
+    }
+
+    function setEditor(store, value) {
+      if (!store.editor) return;
+      store.editor.setValue(value);
+      store.editor.clearSelection();
+    }
+
+    function showError(store, error) {
+      const message = error?.message || String(error || "Invalid MCP JSON.");
+      store.enhancedLastError = message;
+      globalThis.justToast?.(message, "error");
+      return message;
+    }
+
+    async function callJson(path, payload) {
+      const api = await import("/js/api.js");
+      return await api.callJsonApi(path, payload);
+    }
+
+    function patchStore() {
+      const store = globalThis.Alpine?.store?.("mcpServersStore");
+      if (!store || store.__agentspineEnhancedMcpPatched) return;
+      store.__agentspineEnhancedMcpPatched = true;
+      store.enhancedLastError = "";
+      store.enhancedLastValidConfig = "";
+      store.enhancedToggleBusy = {};
+      store.enhancedNormalizeConfig = normalizeConfig;
+
+      const originalInitialize = store.initialize?.bind(store);
+      if (originalInitialize) {
+        store.initialize = async function(...args) {
+          const result = await originalInitialize(...args);
+          try {
+            const normalized = normalizeConfig(this.editor?.getValue() || this.getSettingsFieldConfigJson());
+            setEditor(this, normalized.formatted);
+            this.enhancedLastValidConfig = normalized.formatted;
+          } catch (error) {
+            showError(this, error);
+          }
+          scheduleRefresh();
+          return result;
+        };
+      }
+
+      const originalStartStatus = store.startStatusCheck?.bind(store);
+      if (originalStartStatus) {
+        store.startStatusCheck = function(...args) {
+          if (this.statusCheck) return;
+          return originalStartStatus(...args);
+        };
+      }
+
+      const originalStatus = store._statusCheck?.bind(store);
+      if (originalStatus) {
+        store._statusCheck = async function(...args) {
+          const result = await originalStatus(...args);
+          try {
+            const normalized = normalizeConfig(this.editor?.getValue() || this.getSettingsFieldConfigJson());
+            this.servers = (this.servers || []).map((server) => {
+              const entry = findServer(normalized.parsed, server.name);
+              return { ...server, disabled: Boolean(entry?.disabled) };
+            });
+          } catch {}
+          scheduleRefresh();
+          return result;
+        };
+      }
+
+      store.formatJson = function() {
+        try {
+          const normalized = normalizeConfig(this.editor?.getValue() || this.getSettingsFieldConfigJson());
+          setEditor(this, normalized.formatted);
+          this.enhancedLastValidConfig = normalized.formatted;
+          this.enhancedLastError = "";
+        } catch (error) {
+          alert("Invalid JSON: " + showError(this, error));
+        }
+      };
+
+      const originalApply = store.applyNow?.bind(store);
+      if (originalApply) {
+        store.applyNow = async function(...args) {
+          let normalized;
+          try {
+            normalized = normalizeConfig(this.editor?.getValue() || this.getSettingsFieldConfigJson());
+          } catch (error) {
+            alert("Invalid JSON: " + showError(this, error));
+            return false;
+          }
+          setEditor(this, normalized.formatted);
+          this.enhancedLastValidConfig = normalized.formatted;
+          this.enhancedLastError = "";
+          await originalApply(...args);
+          scheduleRefresh();
+          return true;
+        };
+      }
+
+      const originalClose = store.onClose?.bind(store);
+      if (originalClose) {
+        store.onClose = function(...args) {
+          try {
+            const normalized = normalizeConfig(this.editor?.getValue() || this.getSettingsFieldConfigJson());
+            setEditor(this, normalized.formatted);
+            this.enhancedLastValidConfig = normalized.formatted;
+          } catch (error) {
+            showError(this, error);
+            if (this.enhancedLastValidConfig) setEditor(this, this.enhancedLastValidConfig);
+          }
+          return originalClose(...args);
+        };
+      }
+
+      store.enhancedIsDisabled = function(name) {
+        try {
+          const normalized = normalizeConfig(this.editor?.getValue() || this.getSettingsFieldConfigJson());
+          return Boolean(findServer(normalized.parsed, name)?.disabled);
+        } catch { return false; }
+      };
+
+      store.enhancedToggleServer = async function(name) {
+        try {
+          const normalized = normalizeConfig(this.editor?.getValue() || this.getSettingsFieldConfigJson());
+          const entry = findServer(normalized.parsed, name);
+          if (!entry) throw new Error(`Server "${name}" was not found in the MCP JSON.`);
+          const previousDisabled = Boolean(entry.disabled);
+          entry.disabled = !previousDisabled;
+          const formatted = JSON.stringify(normalized.parsed, null, 2);
+          setEditor(this, formatted);
+          this.enhancedLastValidConfig = formatted;
+          this.enhancedToggleBusy = { ...this.enhancedToggleBusy, [normalizeName(name)]: true };
+          const result = await callJson("/plugins/_enhanced_mcp_config/toggle_server", {
+            server_name: name,
+            disabled: entry.disabled,
+            mcp_servers: formatted,
+          });
+          if (!result?.ok && !result?.status) throw new Error(result?.error || "MCP toggle failed.");
+          if (result?.config) {
+            setEditor(this, result.config);
+            this.enhancedLastValidConfig = result.config;
+          }
+          this.servers = (this.servers || []).map((server) => normalizeName(server.name) === normalizeName(name)
+            ? { ...server, ...(result.status || {}), disabled: Boolean(result.disabled) }
+            : server);
+          return Boolean(result.disabled);
+        } catch (error) {
+          showError(this, error);
+          return null;
+        } finally {
+          this.enhancedToggleBusy = { ...this.enhancedToggleBusy, [normalizeName(name)]: false };
+        }
+      };
+    }
+
+    function installToggles() {
+      patchStore();
+      const store = globalThis.Alpine?.store?.("mcpServersStore");
+      if (!store?.enhancedToggleServer) return;
+      document.querySelectorAll(".server-item").forEach((item) => {
+        const row = item.querySelector(".server-main-row");
+        const name = row?.querySelector(".server-name")?.textContent?.trim();
+        if (!row || !name) return;
+
+        let actions = row.querySelector(".server-actions");
+        if (!actions) {
+          actions = document.createElement("div");
+          actions.className = "server-actions enhanced-mcp-actions";
+          const log = row.querySelector(".log-btn");
+          if (log) actions.append(log);
+          row.append(actions);
+        }
+        if (actions.querySelector(".enhanced-mcp-switch")) return;
+
+        const label = document.createElement("label");
+        label.className = "enhanced-mcp-switch";
+        label.title = `Enable or disable ${name}`;
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !store.enhancedIsDisabled(name);
+        const slider = document.createElement("span");
+        slider.className = "enhanced-mcp-slider";
+        input.addEventListener("change", async () => {
+          input.disabled = true;
+          const disabled = await store.enhancedToggleServer(name);
+          if (disabled !== null) input.checked = !disabled;
+          input.disabled = false;
+        });
+        label.append(input, slider);
+        actions.prepend(label);
+      });
+    }
+
+    function scheduleRefresh() {
+      if (refreshScheduled) return;
+      refreshScheduled = true;
+      requestAnimationFrame(() => {
+        refreshScheduled = false;
+        installToggles();
+      });
+    }
+
+    const style = document.createElement("style");
+    style.textContent = `
+      .enhanced-mcp-actions { display:flex; align-items:center; gap:10px; margin-left:auto; }
+      .enhanced-mcp-actions .log-btn { margin-left:0; }
+      .enhanced-mcp-switch { position:relative; width:38px; height:20px; flex:0 0 38px; }
+      .enhanced-mcp-switch input { opacity:0; width:0; height:0; }
+      .enhanced-mcp-slider { position:absolute; inset:0; cursor:pointer; border-radius:20px; background:#737981; transition:background .16s ease; }
+      .enhanced-mcp-slider::before { content:""; position:absolute; width:16px; height:16px; left:2px; top:2px; border-radius:50%; background:#fff; transition:transform .16s ease; }
+      .enhanced-mcp-switch input:checked + .enhanced-mcp-slider { background:#19a957; }
+      .enhanced-mcp-switch input:checked + .enhanced-mcp-slider::before { transform:translateX(18px); }
+      .enhanced-mcp-switch input:disabled + .enhanced-mcp-slider { cursor:wait; opacity:.5; }
+      .server-main-row { justify-content:space-between; }
+      .server-name { font-weight:650; }
+      #mcp-servers-config-json { border:1px solid rgba(74,163,255,.22); border-radius:6px; overflow:hidden; }
+    `;
+    document.head.append(style);
+
+    document.addEventListener("alpine:init", () => setTimeout(scheduleRefresh, 0));
+    document.addEventListener("DOMContentLoaded", scheduleRefresh, { once: true });
+    new MutationObserver((mutations) => {
+      const relevant = mutations.some((mutation) => Array.from(mutation.addedNodes || []).some((node) =>
+        node.nodeType === 1 && (node.matches?.(".server-item, .mcp-servers-list") || node.querySelector?.(".server-item"))
+      ));
+      if (relevant) scheduleRefresh();
+    }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+    scheduleRefresh();
+  })();
+</script>

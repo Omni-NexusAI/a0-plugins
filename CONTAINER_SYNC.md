@@ -1,44 +1,36 @@
-# Container Sync State
+# Agentspine Built-In Plugin Sync
 
-## Source
+## Current Compatibility
 
-- Container name: `agentspine-gpu-pre`
-- Container ID: `ea634265aca0b0e2567383caf1bc3e8380272566ae59fe08b745adda4ed48c17`
-- Container image ID: `sha256:1697f0cfb1f4114e8e554d02c84c3a86d6ab8c570b7d02c60a260f8dd7580e9a`
-- Sync date: `2026-06-15`
-- Source path: `/a0/plugins`
+- Validated container: `agentspine-standard-pre`
+- Agent Zero runtime: `M v1.20`
+- Agentspine release line: `v0.9.9-standard-pre`
+- Validation date: `2026-06-20`
+- Baked source path: `/a0/plugins`
+- Live hotfix path: `/a0/usr/plugins`
 
 ## Synced Plugin Directories
 
-These directories were copied from the container and cleaned of bytecode caches:
+The Agentspine distribution owns these five underscore-prefixed built-ins:
 
 - `plugins/_agentspine_identity`
 - `plugins/_enhanced_mcp_config`
 - `plugins/_enhanced_speech`
 - `plugins/_multi_source_updater`
+- `plugins/_provider_profiles`
 
-Each synced manifest reports version `0.9.9`.
+Each package has its own README and `AGENTS.md` covering hooks, configuration, compatibility, failure behavior, and tests.
 
-## Behavior Payloads
+## Packaging Contract
 
-Some feature behavior in the GPU-pre container is baked into core runtime files
-rather than the plugin directories themselves. The monorepo plugin packages now
-include those copied files under `overrides/a0` and apply them at startup:
-
-- `_enhanced_speech`: `helpers/settings.py`, `helpers/build_type.py`,
-  `helpers/kokoro_tts.py`, and speech settings UI.
-- `_enhanced_mcp_config`: MCP API handlers, `helpers/mcp_handler.py`,
-  `helpers/settings.py`, and MCP settings UI.
-- `_multi_source_updater`: `helpers/self_update.py`, `helpers/settings.py`,
-  and self-update UI/store files.
-
-## Not Present In This Container
-
-- `_provider_profiles` was not present under `/a0/plugins`, `/a0/usr/plugins`, or `/a0/usr/plugins_disabled` in this container state.
-- `plugins/provider_profiles` remains in this monorepo as portable plugin source. Its behavior mirrors the provider-history logic found in the container's built-in `_model_config` plugin.
+- The repaired `_enhanced_speech`, `_enhanced_mcp_config`, `_provider_profiles`, `_agentspine_identity`, and `_multi_source_updater` packages use their v1.20 built-in layouts. Do not restore the old speech, MCP, or updater `overrides/a0` payload trees.
+- Use `/a0/usr/plugins/<id>` only for reversible live validation. After acceptance, mirror the same package into the Agentspine repository's `plugins/<id>` directory and this monorepo.
+- Keep underscore IDs aligned across directory names, manifests, imports, documentation, and deployment paths.
+- Runtime configuration belongs in the live plugin config files and must not be copied back into source packages.
 
 ## Maintenance Rules
 
-- Treat the four underscore-prefixed plugin directories as the installed Agentspine GPU-pre state until a newer container sync or deliberate upgrade replaces them.
+- Treat the five underscore-prefixed plugin directories as the maintained Agentspine built-in overlay set.
 - Keep underscore directory names unless all manifest names, imports, deployment paths, and docs are updated together.
 - Do not commit container-generated `__pycache__` or `.pyc` files.
+- Validate changes against both truthful upstream health metadata and the source-scoped Agentspine compatibility version.

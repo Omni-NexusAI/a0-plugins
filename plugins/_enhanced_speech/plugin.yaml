@@ -1,7 +1,12 @@
 name: _enhanced_speech
 title: Enhanced Speech
-description: Enables Agentspine enhanced Kokoro speech capabilities in the plugin framework.
+description: >
+  Enhanced Kokoro TTS with dual-voice blending, configurable speed, and optional
+  remote worker support. Adds primary and secondary voice fields with a blend ratio
+  slider. Gracefully degrades on runtimes without enhanced speech support.
 version: 0.9.9
-always_enabled: true
 settings_sections:
   - agent
+always_enabled: true
+per_project_config: false
+per_agent_config: false
