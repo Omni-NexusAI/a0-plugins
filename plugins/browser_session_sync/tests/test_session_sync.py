@@ -464,16 +464,23 @@ def test_delete_context_snapshots_preserves_global_current_file(tmp_path, monkey
     assert manifest["global_latest"]["filename"] == global_path.name
 
 
-def test_webui_store_uses_draft_config_and_explicit_save():
+def test_webui_settings_component_is_self_contained_and_uses_explicit_save():
     root = Path(__file__).resolve().parents[1]
     store = (root / "webui/config-store.js").read_text(encoding="utf-8")
     html = (root / "webui/config.html").read_text(encoding="utf-8")
 
     assert "draftConfig" in store
-    assert "hasUnsavedChanges()" in store
+    assert "draftConfig" in html
+    assert "hasUnsavedChanges()" in html
     assert "Save Settings" in html
     assert "Reset Changes" in html
+    assert "$store.browserSessionSync" not in html
+    assert "config-store.js" not in html
+    assert "<script" not in html
     assert '@change="saveConfig"' not in html
+    assert 'x-model="draftConfig.session_scope"' in html
+    assert 'value="global">Global across chats' in html
+    assert 'value="chat">Current chat only' in html
     assert "btn-primary" in html
     assert "--color-bg-secondary, #e2e8f0" in html
 
