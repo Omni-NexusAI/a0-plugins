@@ -49,9 +49,14 @@ class NoSnapshotChange(RuntimeError):
 def load_config() -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
     try:
-        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        from helpers import plugins
+
+        raw = plugins.get_plugin_config("browser_session_sync", agent=None) or {}
     except Exception:
-        raw = {}
+        try:
+            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            raw = {}
     if isinstance(raw, dict):
         for key, value in raw.items():
             if key != "enabled":
@@ -145,22 +150,20 @@ def max_auto_restore_tabs() -> int:
 
 
 def save_config(updates: dict[str, Any]) -> dict[str, Any]:
-    try:
-        raw_config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        raw_config = {}
-    if not isinstance(raw_config, dict):
-        raw_config = {}
-    raw_config.pop("enabled", None)
-    config = normalize_config({**raw_config, **load_config()}, preserve_unknown=True)
+    config = normalize_config(load_config(), preserve_unknown=True)
     for key in DEFAULT_CONFIG:
         if key in updates:
             config[key] = updates[key]
     config = normalize_config(config, preserve_unknown=True)
-    PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
-    tmp.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(CONFIG_PATH)
+    try:
+        from helpers import plugins
+
+        plugins.save_plugin_config("browser_session_sync", "", "", config)
+    except Exception:
+        PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(CONFIG_PATH)
     enforce_retention(config)
     return config
 

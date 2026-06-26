@@ -464,25 +464,48 @@ def test_delete_context_snapshots_preserves_global_current_file(tmp_path, monkey
     assert manifest["global_latest"]["filename"] == global_path.name
 
 
-def test_webui_settings_component_is_self_contained_and_uses_explicit_save():
+def test_webui_settings_component_uses_native_modal_actions():
     root = Path(__file__).resolve().parents[1]
-    store = (root / "webui/config-store.js").read_text(encoding="utf-8")
     html = (root / "webui/config.html").read_text(encoding="utf-8")
 
-    assert "draftConfig" in store
-    assert "draftConfig" in html
-    assert "hasUnsavedChanges()" in html
-    assert "Save Settings" in html
-    assert "Reset Changes" in html
+    assert "parentContext" in html
+    assert "__pluginSettingsContext" in html
+    assert "wizardFooter" in html
+    assert "backLabel: () => this.loading ? \"Refreshing...\" : \"Refresh\"" in html
+    assert "Save Settings" not in html
+    assert "Reset Changes" not in html
+    assert "draftConfig" not in html
     assert "$store.browserSessionSync" not in html
     assert "config-store.js" not in html
     assert "<script" not in html
     assert '@change="saveConfig"' not in html
-    assert 'x-model="draftConfig.session_scope"' in html
+    assert 'x-model="settings.session_scope"' in html
     assert 'value="global">Global across chats' in html
     assert 'value="chat">Current chat only' in html
-    assert "btn-primary" in html
     assert "--color-bg-secondary, #e2e8f0" in html
+
+
+def test_plugin_config_hooks_normalize_native_modal_settings(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(session_sync, "enforce_retention", lambda config=None: calls.append(config) or {"ok": True})
+
+    root = Path(__file__).resolve().parents[1]
+    hooks_path = root / "hooks.py"
+    hooks_spec = importlib.util.spec_from_file_location("browser_session_sync_hooks", hooks_path)
+    hooks_module = importlib.util.module_from_spec(hooks_spec)
+    assert hooks_spec.loader is not None
+    hooks_spec.loader.exec_module(hooks_module)
+
+    loaded = hooks_module.get_plugin_config(default={"enabled": False, "allow_global_fallback": True})
+    saved = hooks_module.save_plugin_config(settings={"session_scope": "chat", "max_saved_sessions": 0})
+
+    assert loaded["session_scope"] == "global"
+    assert "enabled" not in loaded
+    assert "allow_global_fallback" not in loaded
+    assert saved["session_scope"] == "chat"
+    assert saved["max_saved_sessions"] == 1
+    assert calls == [saved]
 
 
 def test_sync_reset_and_remove_extensions_return_none(monkeypatch):

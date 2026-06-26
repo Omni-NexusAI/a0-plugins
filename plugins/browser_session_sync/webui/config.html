@@ -36,13 +36,41 @@
             deleting: null,
             expanded: {},
             lastActionResult: "",
-            config: cloneConfig(DEFAULT_CONFIG),
-            draftConfig: cloneConfig(DEFAULT_CONFIG),
+            parentContext: null,
+            fallbackSettings: cloneConfig(DEFAULT_CONFIG),
+            footerControls: null,
             configSaving: false,
 
-            async init() {
-                await this.loadConfig();
+            get settings() {
+                return this.parentContext?.settings || this.fallbackSettings;
+            },
+
+            get config() {
+                return this.settings;
+            },
+
+            async init(rootEl) {
+                this.parentContext = rootEl?.closest(".modal")?.__pluginSettingsContext || null;
+                this.applyConfig(this.parentContext?.settings || this.fallbackSettings);
+                this.footerControls = {
+                    visible: () => true,
+                    canGoBack: () => !this.loading,
+                    backLabel: () => this.loading ? "Refreshing..." : "Refresh",
+                    note: () => this.lastActionResult || this.error || "",
+                    onBack: () => this.loadSessions({ applyConfig: false }),
+                    showNext: () => false,
+                    showSave: () => true,
+                };
+                if (this.parentContext) {
+                    this.parentContext.wizardFooter = this.footerControls;
+                }
                 await this.loadSessions({ applyConfig: false });
+            },
+
+            cleanup() {
+                if (this.parentContext?.wizardFooter === this.footerControls) {
+                    this.parentContext.wizardFooter = null;
+                }
             },
 
             async request(action, payload = {}) {
@@ -57,18 +85,19 @@
             },
 
             applyConfig(config, { updateDraft = true } = {}) {
-                this.config = normalizeConfig(config);
-                if (updateDraft) {
-                    this.draftConfig = cloneConfig(this.config);
+                const normalized = normalizeConfig(config);
+                if (this.parentContext) {
+                    this.parentContext.settings = normalized;
+                } else {
+                    this.fallbackSettings = normalized;
                 }
             },
 
             hasUnsavedChanges() {
-                return CONFIG_KEYS.some((key) => this.config[key] !== this.draftConfig[key]);
+                return CONFIG_KEYS.some((key) => this.config[key] !== this.settings[key]);
             },
 
             resetDraft() {
-                this.draftConfig = cloneConfig(this.config);
                 this.error = "";
                 this.lastActionResult = "Changes reset";
             },
@@ -88,7 +117,7 @@
                 this.configSaving = true;
                 this.error = "";
                 this.lastActionResult = "";
-                const draft = cloneConfig(this.draftConfig);
+                const draft = cloneConfig(this.settings);
                 try {
                     const data = await this.request("save_config", { config: draft });
                     if (data.ok !== false && data.config) {
@@ -96,11 +125,11 @@
                         this.lastActionResult = "Settings saved";
                         await this.loadSessions({ applyConfig: false });
                     } else {
-                        this.draftConfig = draft;
+                        this.applyConfig(draft);
                         this.error = data.error || "Failed to save settings";
                     }
                 } catch (e) {
-                    this.draftConfig = draft;
+                    this.applyConfig(draft);
                     this.error = e.message || "Failed to save settings";
                 } finally {
                     this.configSaving = false;
@@ -179,8 +208,8 @@
             },
 
             restoreLimitLabel() {
-                return this.draftConfig.max_auto_restore_tabs > 0
-                    ? `${this.draftConfig.max_auto_restore_tabs} tabs`
+                return this.settings.max_auto_restore_tabs > 0
+                    ? `${this.settings.max_auto_restore_tabs} tabs`
                     : "Native browser limit";
             },
 
@@ -189,7 +218,7 @@
                 return `${size} / ${this.config.max_cache_mb} MB`;
             }
         };
-    })()' x-init="init()">
+    })()' x-init="init($el)" x-destroy="cleanup()">
         <div class="plugin-settings-section">
             <div class="header-row">
                 <div>
@@ -198,7 +227,6 @@
                         Saves native Browser tabs, cookies, and localStorage. The plugin itself is enabled or disabled from the parent plugin menu.
                     </p>
                 </div>
-                <button class="btn" @click="loadSessions()" :disabled="loading">Refresh</button>
             </div>
 
             <div x-show="error" class="error-message" x-text="error"></div>
@@ -225,23 +253,16 @@
             <section class="settings-panel">
                 <div class="panel-header">
                     <h4>Behavior</h4>
-                    <div class="settings-actions">
-                        <button class="btn" @click="resetDraft()" :disabled="configSaving || !hasUnsavedChanges()">Reset Changes</button>
-                        <button class="btn btn-primary" @click="saveConfig()" :disabled="configSaving || !hasUnsavedChanges()">
-                            <span x-show="!configSaving">Save Settings</span>
-                            <span x-show="configSaving">Saving...</span>
-                        </button>
-                    </div>
                 </div>
                 <label class="toggle-row">
-                    <input type="checkbox" x-model="draftConfig.auto_restore" :disabled="configSaving" />
+                    <input type="checkbox" x-model="settings.auto_restore" />
                     <span>
                         <strong>Auto-restore when Browser opens</strong>
                         <small>Runs once per A0 boot for the selected session scope.</small>
                     </span>
                 </label>
                 <label class="toggle-row">
-                    <input type="checkbox" x-model="draftConfig.auto_save" :disabled="configSaving" />
+                    <input type="checkbox" x-model="settings.auto_save" />
                     <span>
                         <strong>Auto-save live browser state</strong>
                         <small>Debounced saves track loads and closed tabs.</small>
@@ -249,14 +270,14 @@
                 </label>
                 <label class="select-control">
                     <span>Session scope</span>
-                    <select x-model="draftConfig.session_scope" :disabled="configSaving">
+                    <select x-model="settings.session_scope">
                         <option value="global">Global across chats</option>
                         <option value="chat">Current chat only</option>
                     </select>
                     <small>Global is the default and restores the latest browser state from any chat.</small>
                 </label>
                 <label class="toggle-row">
-                    <input type="checkbox" x-model="draftConfig.delete_on_chat_remove" :disabled="configSaving" />
+                    <input type="checkbox" x-model="settings.delete_on_chat_remove" />
                     <span>
                         <strong>Delete cache when chat is removed</strong>
                         <small>Only removes per-chat snapshots; global current state is preserved.</small>
@@ -269,17 +290,17 @@
                 <div class="control-grid">
                     <label class="number-control">
                         <span>Automatic restore limit</span>
-                        <input type="number" x-model.number="draftConfig.max_auto_restore_tabs" min="0" max="100" step="1" :disabled="configSaving" />
+                        <input type="number" x-model.number="settings.max_auto_restore_tabs" min="0" max="100" step="1" />
                         <small x-text="restoreLimitLabel()"></small>
                     </label>
                     <label class="number-control">
                         <span>Saved sessions to keep</span>
-                        <input type="number" x-model.number="draftConfig.max_saved_sessions" min="1" max="5000" step="1" :disabled="configSaving" />
+                        <input type="number" x-model.number="settings.max_saved_sessions" min="1" max="5000" step="1" />
                         <small>Retention runs after saves and settings changes.</small>
                     </label>
                     <label class="number-control">
                         <span>Maximum cache size</span>
-                        <input type="number" x-model.number="draftConfig.max_cache_mb" min="1" max="102400" step="1" :disabled="configSaving" />
+                        <input type="number" x-model.number="settings.max_cache_mb" min="1" max="102400" step="1" />
                         <small>Measured in MB.</small>
                     </label>
                 </div>

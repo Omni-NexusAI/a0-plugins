@@ -15,6 +15,7 @@ This plugin persists native Agent Zero Browser tabs, cookies, and localStorage a
 - Global restore scope is the default; per-chat scope is optional and must not delete the global current snapshot during chat cleanup.
 - `auto_restore`, `auto_save`, restore scope, chat-delete cleanup, auto-restore tab limits, and cache retention remain independently configurable.
 - The settings component must be self-contained per modal mount; do not depend on a global Alpine store or module script execution inside A0's injected `config.html`.
+- Settings fields must bind to the parent A0 modal `context.settings`; the native modal `Default` and `Save` buttons are authoritative, while plugin-local controls may only manage cache/session actions such as refresh or delete.
 
 ## Verification
 
