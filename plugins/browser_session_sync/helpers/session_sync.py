@@ -27,9 +27,18 @@ SAVE_MIN_INTERVAL_SECONDS = 5.0
 SAVE_REFRESH_INTERVAL_SECONDS = 60.0
 RESTORE_FAILURE_RETRY_SECONDS = 30.0
 DEFAULT_CONFIG = {
-    "enabled": True,
     "auto_restore": True,
     "auto_save": True,
+    "session_scope": "global",
+    "delete_on_chat_remove": True,
+    "max_auto_restore_tabs": 0,
+    "max_saved_sessions": 500,
+    "max_cache_mb": 1024,
+}
+CONFIG_LIMITS = {
+    "max_auto_restore_tabs": (0, 100),
+    "max_saved_sessions": (1, 5000),
+    "max_cache_mb": (1, 102400),
 }
 
 
@@ -44,12 +53,13 @@ def load_config() -> dict[str, Any]:
     except Exception:
         raw = {}
     if isinstance(raw, dict):
-        config.update(raw)
-    return config
+        for key, value in raw.items():
+            if key != "enabled":
+                config[key] = value
+    return normalize_config(config, preserve_unknown=True)
 
 
-def config_bool(name: str, default: bool = True) -> bool:
-    value = load_config().get(name, default)
+def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     if value is None:
@@ -62,27 +72,96 @@ def config_bool(name: str, default: bool = True) -> bool:
     return default
 
 
+def config_bool(name: str, default: bool = True) -> bool:
+    return _coerce_bool(load_config().get(name, default), default)
+
+
+def _coerce_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        coerced = int(float(value))
+    except (TypeError, ValueError):
+        coerced = default
+    return max(minimum, min(maximum, coerced))
+
+
+def _coerce_float(value: Any, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        coerced = default
+    return max(minimum, min(maximum, coerced))
+
+
+def normalize_config(config: dict[str, Any], *, preserve_unknown: bool = False) -> dict[str, Any]:
+    normalized = dict(config) if preserve_unknown else {}
+    for key, default in DEFAULT_CONFIG.items():
+        if isinstance(default, bool):
+            normalized[key] = _coerce_bool(config.get(key), default)
+        elif key in CONFIG_LIMITS:
+            minimum, maximum = CONFIG_LIMITS[key]
+            if isinstance(default, float):
+                normalized[key] = _coerce_float(config.get(key), default, minimum=minimum, maximum=maximum)
+            else:
+                normalized[key] = _coerce_int(config.get(key), default, minimum=int(minimum), maximum=int(maximum))
+        else:
+            normalized[key] = config.get(key, default)
+    scope = str(normalized.get("session_scope") or DEFAULT_CONFIG["session_scope"]).strip().lower()
+    normalized["session_scope"] = scope if scope in {"global", "chat"} else DEFAULT_CONFIG["session_scope"]
+    if "session_scope" not in config and _coerce_bool(config.get("allow_global_fallback"), False):
+        normalized["session_scope"] = "global"
+    normalized.pop("enabled", None)
+    normalized.pop("allow_global_fallback", None)
+    return normalized
+
+
 def plugin_enabled() -> bool:
-    return config_bool("enabled", True)
+    return True
 
 
 def auto_restore_enabled() -> bool:
-    return plugin_enabled() and config_bool("auto_restore", True)
+    return config_bool("auto_restore", True)
 
 
 def auto_save_enabled() -> bool:
-    return plugin_enabled() and config_bool("auto_save", True)
+    return config_bool("auto_save", True)
+
+
+def allow_global_fallback_enabled() -> bool:
+    return session_scope() == "global"
+
+
+def session_scope() -> str:
+    return str(load_config().get("session_scope") or "global")
+
+
+def delete_on_chat_remove_enabled() -> bool:
+    return config_bool("delete_on_chat_remove", True)
+
+
+def max_auto_restore_tabs() -> int:
+    config = load_config()
+    minimum, maximum = CONFIG_LIMITS["max_auto_restore_tabs"]
+    return _coerce_int(config.get("max_auto_restore_tabs"), 0, minimum=minimum, maximum=maximum)
 
 
 def save_config(updates: dict[str, Any]) -> dict[str, Any]:
-    config = load_config()
+    try:
+        raw_config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        raw_config = {}
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+    raw_config.pop("enabled", None)
+    config = normalize_config({**raw_config, **load_config()}, preserve_unknown=True)
     for key in DEFAULT_CONFIG:
         if key in updates:
-            config[key] = bool(updates[key])
+            config[key] = updates[key]
+    config = normalize_config(config, preserve_unknown=True)
     PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
     tmp.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(CONFIG_PATH)
+    enforce_retention(config)
     return config
 
 
@@ -99,7 +178,7 @@ def boot_id() -> str:
 
 def context_id_from_extension_data(data: dict[str, Any] | None) -> str:
     args = (data or {}).get("args", ())
-    if not isinstance(args, tuple) or not args:
+    if not isinstance(args, (tuple, list)) or not args:
         return ""
     first = args[0]
     if isinstance(first, str):
@@ -138,6 +217,15 @@ def _safe_candidates() -> list[Path]:
     )
 
 
+def _session_files() -> list[Path]:
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    return [
+        path
+        for path in SAVE_DIR.glob("*.json")
+        if path.name != MANIFEST_FILE_NAME and path.is_file()
+    ]
+
+
 def _manifest_path() -> Path:
     return SAVE_DIR / MANIFEST_FILE_NAME
 
@@ -163,6 +251,139 @@ def save_manifest(manifest: dict[str, Any]) -> None:
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
     tmp.replace(target)
+
+
+def _entry_filename(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    filename = str(entry.get("filename") or "").strip()
+    if Path(filename).name != filename:
+        return ""
+    return filename
+
+
+def repair_manifest() -> dict[str, Any]:
+    manifest = load_manifest()
+    contexts = manifest.get("contexts")
+    if not isinstance(contexts, dict):
+        contexts = {}
+        manifest["contexts"] = contexts
+
+    changed = False
+    for context_id, entry in list(contexts.items()):
+        filename = _entry_filename(entry)
+        if not filename or not (SAVE_DIR / filename).exists():
+            contexts.pop(context_id, None)
+            changed = True
+
+    global_entry = manifest.get("global_latest")
+    global_filename = _entry_filename(global_entry)
+    if global_filename and (SAVE_DIR / global_filename).exists():
+        if changed:
+            save_manifest(manifest)
+        return manifest
+
+    newest_context_id = ""
+    newest_entry: dict[str, Any] | None = None
+    newest_time = -1.0
+    for context_id, entry in contexts.items():
+        if not isinstance(entry, dict):
+            continue
+        updated_at = float(entry.get("updated_at") or 0)
+        if updated_at > newest_time:
+            newest_context_id = str(context_id)
+            newest_entry = entry
+            newest_time = updated_at
+
+    if newest_entry:
+        manifest["global_latest"] = {"context_id": newest_context_id, **newest_entry}
+    else:
+        manifest.pop("global_latest", None)
+    save_manifest(manifest)
+    return manifest
+
+
+def enforce_retention(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = normalize_config(config or load_config(), preserve_unknown=True)
+    max_count = _coerce_int(
+        config.get("max_saved_sessions"),
+        DEFAULT_CONFIG["max_saved_sessions"],
+        minimum=CONFIG_LIMITS["max_saved_sessions"][0],
+        maximum=CONFIG_LIMITS["max_saved_sessions"][1],
+    )
+    max_bytes = int(
+        _coerce_float(
+            config.get("max_cache_mb"),
+            DEFAULT_CONFIG["max_cache_mb"],
+            minimum=CONFIG_LIMITS["max_cache_mb"][0],
+            maximum=CONFIG_LIMITS["max_cache_mb"][1],
+        )
+        * 1024
+        * 1024
+    )
+
+    files = sorted(_session_files(), key=lambda path: path.stat().st_mtime, reverse=True)
+    total_size = sum(path.stat().st_size for path in files)
+    deleted: list[str] = []
+
+    while files and (len(files) > max_count or total_size > max_bytes):
+        victim = files.pop()
+        try:
+            size = victim.stat().st_size
+            victim.unlink()
+            total_size -= size
+            deleted.append(victim.name)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            break
+
+    repair_manifest()
+    return {
+        "ok": True,
+        "deleted": len(deleted),
+        "deleted_files": deleted,
+        "total_files": len(_session_files()),
+        "total_size": sum(path.stat().st_size for path in _session_files()),
+        "max_saved_sessions": max_count,
+        "max_cache_mb": config["max_cache_mb"],
+    }
+
+
+def delete_session_file(filename: str) -> bool:
+    if not filename or Path(filename).name != filename or filename == MANIFEST_FILE_NAME:
+        return False
+    target = SAVE_DIR / filename
+    if not target.exists() or not target.is_file():
+        return False
+    target.unlink()
+    repair_manifest()
+    return True
+
+
+def delete_context_snapshots(context_id: str) -> int:
+    context_id = str(context_id or "").strip()
+    if not context_id:
+        return 0
+    manifest = load_manifest()
+    global_latest = manifest.get("global_latest")
+    protected_global = _entry_filename(global_latest)
+    deleted = 0
+    for path in _session_files():
+        if protected_global and path.name == protected_global:
+            continue
+        if path.name == f"{context_id}.json" or path.name.startswith(f"{context_id}_"):
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError:
+                pass
+    contexts = manifest.setdefault("contexts", {})
+    if isinstance(contexts, dict):
+        contexts.pop(context_id, None)
+    save_manifest(manifest)
+    repair_manifest()
+    return deleted
 
 
 def _manifest_snapshot(context_id: str, *, include_global: bool = True) -> tuple[Path, dict[str, Any]] | None:
@@ -255,7 +476,13 @@ def mark_restore_attempt(context_id: str, *, state: str, message: str = "", retr
     save_manifest(manifest)
 
 
-def select_best_snapshot(context_id: str, filename: str | None = None) -> tuple[Path, dict[str, Any]] | None:
+def select_best_snapshot(
+    context_id: str,
+    filename: str | None = None,
+    *,
+    allow_global_fallback: bool | None = None,
+    scope: str | None = None,
+) -> tuple[Path, dict[str, Any]] | None:
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     if filename:
         requested = SAVE_DIR / filename
@@ -264,13 +491,28 @@ def select_best_snapshot(context_id: str, filename: str | None = None) -> tuple[
         return None
 
     context_id = str(context_id or "").strip()
+    selected_scope = str(scope or session_scope()).strip().lower()
+    if selected_scope not in {"global", "chat"}:
+        selected_scope = "global"
+
+    if selected_scope == "global":
+        global_current = _global_manifest_snapshot()
+        if global_current:
+            return global_current
+        candidates = _safe_candidates()
+        for path in candidates:
+            try:
+                return path, load_snapshot(path)
+            except Exception:
+                continue
+        return None
+
     current = _manifest_snapshot(context_id, include_global=False)
     if current:
         return current
 
     candidates = _safe_candidates()
     exact: list[tuple[Path, dict[str, Any]]] = []
-    any_snapshot: list[tuple[Path, dict[str, Any]]] = []
     for path in candidates:
         try:
             snapshot = load_snapshot(path)
@@ -279,16 +521,35 @@ def select_best_snapshot(context_id: str, filename: str | None = None) -> tuple[
         item = (path, snapshot)
         if context_id and (path.name == f"{context_id}.json" or path.name.startswith(f"{context_id}_")):
             exact.append(item)
-        any_snapshot.append(item)
 
-    for bucket in (exact, any_snapshot):
-        if bucket:
-            return bucket[0]
-        if bucket is exact:
-            global_current = _manifest_snapshot(context_id, include_global=True)
-            if global_current:
-                return global_current
+    if exact:
+        return exact[0]
+
+    use_global_fallback = (
+        allow_global_fallback
+        if allow_global_fallback is not None
+        else False
+    )
+    if use_global_fallback:
+        global_current = _global_manifest_snapshot()
+        if global_current:
+            return global_current
     return None
+
+
+def _global_manifest_snapshot() -> tuple[Path, dict[str, Any]] | None:
+    manifest = load_manifest()
+    global_latest = manifest.get("global_latest")
+    filename = str(global_latest.get("filename") or "").strip() if isinstance(global_latest, dict) else ""
+    if not filename or Path(filename).name != filename:
+        return None
+    path = SAVE_DIR / filename
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return path, load_snapshot(path)
+    except Exception:
+        return None
 
 
 def _origin_for_url(url: str) -> str:
@@ -360,6 +621,7 @@ async def save_core_snapshot(core: Any, *, suffix: str | None = None, force: boo
     setattr(core, SAVE_SIGNATURE_ATTR, signature)
     setattr(core, SAVE_LAST_AT_ATTR, now)
     update_manifest(context_id, target, payload, signature)
+    enforce_retention()
     return target
 
 
@@ -477,7 +739,11 @@ async def restore_core_session(
         return "Browser session restore already ran for this runtime."
     setattr(core, RESTORED_FLAG, True)
 
-    selected = select_best_snapshot(str(getattr(core, "context_id", "") or ""), filename)
+    selected = select_best_snapshot(
+        str(getattr(core, "context_id", "") or ""),
+        filename,
+        allow_global_fallback=force or None,
+    )
     if not selected:
         return "No saved browser sessions found."
     path, snapshot = selected
@@ -495,7 +761,11 @@ async def restore_core_session(
             await _inject_storage(core, context_state)
 
         opened = 0
-        max_tabs = core._max_open_tabs()
+        native_max_tabs = core._max_open_tabs()
+        restore_limit = max_auto_restore_tabs()
+        max_tabs = native_max_tabs
+        if not force and restore_limit > 0:
+            max_tabs = min(native_max_tabs, restore_limit)
         for tab in tabs[:max_tabs]:
             url = str(tab.get("url") or "").strip()
             if not url or url == "about:blank" or url in existing_urls:
@@ -543,9 +813,6 @@ async def _run_with_core_started(
 
 
 async def save_runtime_snapshot_for_context(context_id: str) -> str:
-    if not plugin_enabled():
-        return "Browser Session Sync is disabled."
-
     async def callback(core: Any) -> str:
         path = await save_core_snapshot(core, force=True)
         snapshot = load_snapshot(path)
@@ -559,15 +826,38 @@ async def save_runtime_snapshot_for_context(context_id: str) -> str:
     return await _run_with_core_started(context_id, callback, create=False, ensure_started=False)
 
 
+def save_runtime_snapshot_for_context_sync(context_id: str, *, timeout: float = 8.0) -> str:
+    try:
+        from helpers.defer import DeferredTask
+    except Exception:
+        return "Browser session sync save skipped: DeferredTask unavailable."
+    try:
+        task = DeferredTask().start_task(save_runtime_snapshot_for_context, context_id)
+        return str(task.result_sync(timeout=timeout))
+    except Exception as exc:
+        return f"Browser session sync save skipped: {exc}"
+
+
+def handle_context_reset_sync(context_id: str) -> None:
+    if context_id and auto_save_enabled():
+        save_runtime_snapshot_for_context_sync(context_id)
+
+
+def handle_context_remove_sync(context_id: str) -> None:
+    if not context_id:
+        return
+    if delete_on_chat_remove_enabled():
+        delete_context_snapshots(context_id)
+    elif auto_save_enabled():
+        save_runtime_snapshot_for_context_sync(context_id)
+
+
 async def restore_runtime_session_for_context(
     context_id: str,
     filename: str | None = None,
     *,
     force: bool = False,
 ) -> str:
-    if not plugin_enabled():
-        return "Browser Session Sync is disabled."
-
     async def callback(core: Any) -> str:
         return await restore_core_session(core, filename=filename, force=force)
 

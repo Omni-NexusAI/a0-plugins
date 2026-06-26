@@ -1,106 +1,128 @@
 <html>
 <head>
     <title>Browser Session Sync</title>
-    <script type="module">
-        import { store } from "/plugins/browser_session_sync/webui/config-store.js";
-    </script>
+    <script type="module" src="/plugins/browser_session_sync/webui/config-store.js"></script>
 </head>
 <body>
-    <div x-data="store" x-init="init()">
+    <div x-data="$store.browserSessionSync" x-init="init()">
         <div class="plugin-settings-section">
-            <h3>Browser Session Cache</h3>
-            <p class="plugin-settings-desc">
-                Persists native Browser tabs, cookies, and localStorage. Auto-restore runs once per context per A0 boot.
-            </p>
-            
-            <div class="cache-controls-panel">
-                <h4>Settings</h4>
-                <label class="toggle-row">
-                    <input type="checkbox" x-model="config.enabled" @change="saveConfig" :disabled="configSaving" />
-                    <span>Enable Browser Session Sync</span>
-                </label>
-                <label class="toggle-row">
-                    <input type="checkbox" x-model="config.auto_restore" @change="saveConfig" :disabled="configSaving || !config.enabled" />
-                    <span>Auto-restore once after A0 starts</span>
-                </label>
-                <label class="toggle-row">
-                    <input type="checkbox" x-model="config.auto_save" @change="saveConfig" :disabled="configSaving || !config.enabled" />
-                    <span>Auto-save current browser state</span>
-                </label>
+            <div class="header-row">
+                <div>
+                    <h3>Browser Session Cache</h3>
+                    <p class="plugin-settings-desc">
+                        Saves native Browser tabs, cookies, and localStorage. The plugin itself is enabled or disabled from the parent plugin menu.
+                    </p>
+                </div>
+                <button class="btn" @click="loadSessions()" :disabled="loading">Refresh</button>
             </div>
-            
-            <!-- Stats Panel -->
-            <div class="cache-stats-panel">
-                <h4>Cache Statistics</h4>
-                <div x-show="stats">
-                    <table class="stats-table">
-                        <tr><th>Saved Snapshots</th><td x-text="stats?.total_files ?? 0"></td></tr>
-                        <tr><th>Total Tabs Across All</th><td x-text="stats?.total_tabs ?? 0"></td></tr>
-                        <tr><th>Total Cookies</th><td x-text="stats?.total_cookies ?? 0"></td></tr>
-                        <tr><th>Origins (localStorage)</th><td x-text="stats?.total_origins ?? 0"></td></tr>
-                        <tr><th>Unique Domains</th><td x-text="stats?.unique_domains ?? 0"></td></tr>
-                        <tr><th>Total Size</th><td x-text="stats?.total_size_str ?? '0 B'"></td></tr>
-                    </table>
+
+            <div x-show="error" class="error-message" x-text="error"></div>
+            <div x-show="lastActionResult" class="action-result" x-text="lastActionResult"></div>
+
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <span class="summary-label">Stored sessions</span>
+                    <strong x-text="stats?.total_files ?? 0"></strong>
+                    <small x-text="`Limit ${config.max_saved_sessions}`"></small>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Storage</span>
+                    <strong x-text="storageLabel()"></strong>
+                    <small>Oldest snapshots are removed first.</small>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Latest current tabs</span>
+                    <strong x-text="stats?.global_current?.tab_count ?? 0"></strong>
+                    <small x-text="stats?.global_current?.context_id ? `Context ${stats.global_current.context_id}` : 'No current snapshot'"></small>
                 </div>
             </div>
-            
-            <!-- Cache Management Controls -->
-            <div class="cache-controls-panel">
-                <h4>Cache Management</h4>
-                <div class="control-row">
-                    <label>
-                        Keep only the latest:
-                        <input type="number" x-model.number="keepCount" min="1" max="100" />
-                        snapshots
-                    </label>
-                    <button class="btn" @click="pruneOldest" :disabled="loading">
-                        <span x-show="!loading">Prune Oldest</span>
-                        <span x-show="loading">Pruning...</span>
-                    </button>
-                </div>
-                <div class="control-row">
-                    <label>
-                        Max cache size:
-                        <input type="number" x-model.number="maxSizeMB" min="1" max="10000" step="1" />
-                        MB
-                    </label>
-                    <button class="btn" @click="enforceMaxSize" :disabled="loading">
-                        <span x-show="!loading">Enforce Limit</span>
-                        <span x-show="loading">Enforcing...</span>
-                    </button>
-                </div>
-                <div x-show="lastActionResult" class="action-result" x-text="lastActionResult"></div>
-            </div>
-            
-            <!-- Sessions List -->
-            <div class="sessions-list-panel">
+
+            <section class="settings-panel">
                 <div class="panel-header">
-                    <h4>Saved Sessions</h4>
-                    <div>
-                        <button class="btn" @click="loadSessions()" :disabled="loading">Refresh</button>
-                        <button class="btn btn-danger" @click="deleteAll" :disabled="loading">
-                            <span x-show="deleting !== 'all'">Clear All</span>
-                            <span x-show="deleting === 'all'">Clearing...</span>
+                    <h4>Behavior</h4>
+                    <div class="settings-actions">
+                        <button class="btn" @click="resetDraft()" :disabled="configSaving || !hasUnsavedChanges()">Reset Changes</button>
+                        <button class="btn btn-primary" @click="saveConfig()" :disabled="configSaving || !hasUnsavedChanges()">
+                            <span x-show="!configSaving">Save Settings</span>
+                            <span x-show="configSaving">Saving...</span>
                         </button>
                     </div>
                 </div>
-                
-                <div x-show="loading && sessions.length === 0" class="loading-indicator">Loading sessions...</div>
-                <div x-show="!loading && error" class="error-message" x-text="error"></div>
-                <div x-show="!loading && sessions.length === 0 && !error" class="empty-state">
-                    No saved browser sessions yet. Open a browser tab and navigate — it will be auto-saved.
+                <label class="toggle-row">
+                    <input type="checkbox" x-model="draftConfig.auto_restore" :disabled="configSaving" />
+                    <span>
+                        <strong>Auto-restore when Browser opens</strong>
+                        <small>Runs once per A0 boot for the selected session scope.</small>
+                    </span>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" x-model="draftConfig.auto_save" :disabled="configSaving" />
+                    <span>
+                        <strong>Auto-save live browser state</strong>
+                        <small>Debounced saves track loads and closed tabs.</small>
+                    </span>
+                </label>
+                <label class="select-control">
+                    <span>Session scope</span>
+                    <select x-model="draftConfig.session_scope" :disabled="configSaving">
+                        <option value="global">Global across chats</option>
+                        <option value="chat">Current chat only</option>
+                    </select>
+                    <small>Global is the default and restores the latest browser state from any chat.</small>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" x-model="draftConfig.delete_on_chat_remove" :disabled="configSaving" />
+                    <span>
+                        <strong>Delete cache when chat is removed</strong>
+                        <small>Only removes per-chat snapshots; global current state is preserved.</small>
+                    </span>
+                </label>
+            </section>
+
+            <section class="settings-panel">
+                <h4>Cache Management</h4>
+                <div class="control-grid">
+                    <label class="number-control">
+                        <span>Automatic restore limit</span>
+                        <input type="number" x-model.number="draftConfig.max_auto_restore_tabs" min="0" max="100" step="1" :disabled="configSaving" />
+                        <small x-text="restoreLimitLabel()"></small>
+                    </label>
+                    <label class="number-control">
+                        <span>Saved sessions to keep</span>
+                        <input type="number" x-model.number="draftConfig.max_saved_sessions" min="1" max="5000" step="1" :disabled="configSaving" />
+                        <small>Retention runs after saves and settings changes.</small>
+                    </label>
+                    <label class="number-control">
+                        <span>Maximum cache size</span>
+                        <input type="number" x-model.number="draftConfig.max_cache_mb" min="1" max="102400" step="1" :disabled="configSaving" />
+                        <small>Measured in MB.</small>
+                    </label>
                 </div>
-                
-                <div x-show="sessions.length > 0">
+            </section>
+
+            <section class="settings-panel">
+                <div class="panel-header">
+                    <h4>Saved Sessions</h4>
+                    <button class="btn btn-danger" @click="deleteAll" :disabled="loading || deleting === 'all'">
+                        <span x-show="deleting !== 'all'">Clear All</span>
+                        <span x-show="deleting === 'all'">Clearing...</span>
+                    </button>
+                </div>
+
+                <div x-show="loading && sessions.length === 0" class="loading-indicator">Loading sessions...</div>
+                <div x-show="!loading && sessions.length === 0 && !error" class="empty-state">
+                    No saved browser sessions yet.
+                </div>
+
+                <div x-show="sessions.length > 0" class="table-wrap">
                     <table class="data-table">
                         <thead>
                             <tr>
-                                <th>File / Tabs</th>
+                                <th>Session</th>
+                                <th>Context</th>
                                 <th>Tabs</th>
-                                <th>Cookies</th>
-                                <th>Origins</th>
-                                <th>Size</th>
-                                <th>Date</th>
+                                <th>Storage</th>
+                                <th>Saved</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -108,11 +130,17 @@
                             <template x-for="s in sessions" :key="s.name">
                                 <tr>
                                     <td>
-                                        <code x-text="s.name"></code>
-                                        <button class="btn-view" @click="toggleDetails(s.name)" x-text="expanded[s.name] ? '−' : '+'"></button>
+                                        <div class="session-title">
+                                            <button class="btn-view" @click="toggleDetails(s.name)" x-text="expanded[s.name] ? '-' : '+'"></button>
+                                            <code x-text="s.name"></code>
+                                        </div>
+                                        <div class="badges">
+                                            <span x-show="s.is_current" class="badge">Current</span>
+                                            <span x-show="s.is_global_current" class="badge">Global latest</span>
+                                        </div>
                                         <div x-show="expanded[s.name]" class="session-details">
                                             <div x-show="s.tab_count > 0">
-                                                <strong>Open Tabs (will be restored):</strong>
+                                                <strong>Tabs</strong>
                                                 <ul class="tabs-list">
                                                     <template x-for="(tab, idx) in s.tabs" :key="idx">
                                                         <li>
@@ -124,27 +152,19 @@
                                                 </ul>
                                             </div>
                                             <div x-show="s.tab_count === 0" class="legacy-note">
-                                                <em>Legacy snapshot: no tab list (only cookies/localStorage).</em>
-                                            </div>
-                                            <div class="domains-section" x-show="s.domains.length > 0">
-                                                <strong>Domains:</strong>
-                                                <ul class="domains-list">
-                                                    <template x-for="d in s.domains" :key="d">
-                                                        <li x-text="d"></li>
-                                                    </template>
-                                                </ul>
+                                                No saved tabs in this snapshot.
                                             </div>
                                         </div>
                                     </td>
+                                    <td x-text="s.context_id || '-'"></td>
                                     <td x-text="s.tab_count || 0"></td>
-                                    <td x-text="s.cookies"></td>
-                                    <td x-text="s.origins"></td>
-                                    <td x-text="s.size_str"></td>
+                                    <td>
+                                        <span x-text="s.size_str"></span>
+                                        <small x-text="`${s.cookies} cookies, ${s.origins} origins`"></small>
+                                    </td>
                                     <td x-text="s.date_str"></td>
                                     <td>
-                                        <button class="btn btn-danger btn-sm" 
-                                                @click="deleteSession(s.name)"
-                                                :disabled="deleting === s.name">
+                                        <button class="btn btn-danger btn-sm" @click="deleteSession(s.name)" :disabled="deleting === s.name">
                                             <span x-show="deleting !== s.name">Delete</span>
                                             <span x-show="deleting === s.name">...</span>
                                         </button>
@@ -154,69 +174,59 @@
                         </tbody>
                     </table>
                 </div>
-            </div>
+            </section>
         </div>
     </div>
-    
+
     <style>
-        .plugin-settings-section { padding: 1.25rem; }
-        .plugin-settings-section h3 { margin: 0 0 0.5rem; }
-        .plugin-settings-section h4 { margin: 1rem 0 0.5rem; font-size: 0.95rem; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
-        .plugin-settings-desc { color: var(--color-text-secondary); margin-bottom: 1.25rem; font-size: 0.9rem; line-height: 1.4; }
-        
-        .cache-stats-panel, .cache-controls-panel, .sessions-list-panel {
-            background: var(--color-panel);
-            border: 1px solid var(--color-border);
-            border-radius: 4px;
-            padding: 0.75rem 1rem;
-            margin-bottom: 1rem;
-        }
-        
-        .stats-table { width: 100%; border-collapse: collapse; }
-        .stats-table th { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; color: var(--color-text-secondary); font-weight: 500; width: 40%; }
-        .stats-table td { padding: 0.25rem 0; font-weight: 600; }
-        
-        .control-row { display: flex; align-items: center; gap: 0.75rem; margin: 0.5rem 0; flex-wrap: wrap; }
-        .control-row label { display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 250px; }
-        .control-row input { width: 80px; }
-        .toggle-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; font-size: 0.9rem; }
-        .toggle-row input { width: auto; }
-        
-        .action-result { padding: 0.5rem; margin-top: 0.5rem; background: var(--color-success-bg, #d4edda); color: var(--color-success, #155724); border-radius: 4px; font-size: 0.85rem; }
-        
-        .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
-        .panel-header h4 { margin: 0; }
-        .panel-header > div { display: flex; gap: 0.5rem; }
-        
+        .plugin-settings-section { padding: 1.25rem; color: var(--color-text-primary); }
+        .header-row, .panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+        .plugin-settings-section h3 { margin: 0 0 0.4rem; }
+        .plugin-settings-section h4 { margin: 0 0 0.75rem; font-size: 0.85rem; color: var(--color-text-secondary); text-transform: uppercase; }
+        .plugin-settings-desc { color: var(--color-text-secondary); margin: 0 0 1rem; font-size: 0.9rem; line-height: 1.4; }
+        .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+        .summary-item, .settings-panel { background: var(--color-panel); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.85rem 1rem; }
+        .summary-label, .number-control span { display: block; color: var(--color-text-secondary); font-size: 0.78rem; margin-bottom: 0.35rem; }
+        .summary-item strong { display: block; font-size: 1.05rem; }
+        small { display: block; color: var(--color-text-secondary); font-size: 0.75rem; line-height: 1.35; margin-top: 0.2rem; }
+        .settings-panel { margin-bottom: 1rem; }
+        .toggle-row { display: flex; align-items: flex-start; gap: 0.65rem; margin: 0.75rem 0; }
+        .toggle-row input { margin-top: 0.2rem; }
+        .toggle-row strong { display: block; font-size: 0.9rem; }
+        .control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+        .number-control input, .select-control select { width: 100%; box-sizing: border-box; min-height: 2rem; }
+        .select-control { display: block; margin: 0.8rem 0; }
+        .select-control > span { display: block; color: var(--color-text-secondary, #4b5563); font-size: 0.78rem; margin-bottom: 0.35rem; }
+        .settings-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+        .action-result { padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; background: var(--color-success-bg, #d4edda); color: var(--color-success, #155724); border-radius: 4px; font-size: 0.85rem; }
+        .error-message { padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; color: var(--color-error, #e74c3c); border: 1px solid var(--color-error, #e74c3c); border-radius: 4px; }
+        .table-wrap { overflow-x: auto; }
         .data-table { width: 100%; border-collapse: collapse; }
-        .data-table th, .data-table td { border: 1px solid var(--color-border); padding: 0.5rem; text-align: left; font-size: 0.85rem; vertical-align: top; }
+        .data-table th, .data-table td { border: 1px solid var(--color-border); padding: 0.5rem; text-align: left; font-size: 0.82rem; vertical-align: top; }
         .data-table th { background: var(--color-bg-secondary); font-weight: 600; }
         .data-table code { font-size: 0.75rem; word-break: break-all; }
-        
-        .btn-view { background: none; border: 1px solid var(--color-border); border-radius: 50%; width: 20px; height: 20px; padding: 0; margin-left: 0.25rem; cursor: pointer; font-size: 0.75rem; }
-        
-        .session-details { margin-top: 0.5rem; padding: 0.5rem; background: var(--color-bg-secondary); border-radius: 4px; font-size: 0.8rem; max-height: 300px; overflow-y: auto; }
-        .session-details ul { margin: 0.25rem 0 0.5rem 0; padding-left: 1.25rem; }
-        .session-details li { color: var(--color-text-secondary); font-family: monospace; font-size: 0.75rem; margin-bottom: 0.35rem; line-height: 1.4; }
-        
-        .tabs-list li { display: flex; flex-direction: column; gap: 0.1rem; }
-        .tab-host { color: var(--color-highlight, #4a9eff); font-weight: 600; }
-        .tab-title { color: var(--color-text-primary); font-style: italic; font-size: 0.8rem; }
-        .tab-url { color: var(--color-text-secondary); font-size: 0.7rem; opacity: 0.7; word-break: break-all; }
-        
-        .domains-list { display: flex; flex-wrap: wrap; gap: 0.25rem; padding-left: 0 !important; list-style: none !important; }
-        .domains-list li { background: var(--color-panel); border: 1px solid var(--color-border); border-radius: 3px; padding: 0.15rem 0.4rem; font-size: 0.7rem !important; margin: 0 !important; }
-        
-        .legacy-note { color: var(--color-text-secondary); font-size: 0.8rem; padding: 0.25rem 0; }
-        
-        .btn { padding: 0.4rem 0.75rem; border: 1px solid var(--color-border); background: var(--color-bg-secondary); border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+        .session-title { display: flex; align-items: center; gap: 0.35rem; }
+        .btn-view { border: 1px solid var(--color-border); background: var(--color-bg-secondary); border-radius: 4px; width: 1.4rem; height: 1.4rem; cursor: pointer; }
+        .badges { display: flex; gap: 0.3rem; margin-top: 0.35rem; flex-wrap: wrap; }
+        .badge { border: 1px solid var(--color-border); border-radius: 3px; padding: 0.08rem 0.35rem; font-size: 0.68rem; color: var(--color-text-secondary); }
+        .session-details { margin-top: 0.5rem; padding: 0.5rem; background: var(--color-bg-secondary); border-radius: 4px; max-height: 260px; overflow-y: auto; }
+        .tabs-list { margin: 0.35rem 0 0; padding-left: 1rem; }
+        .tabs-list li { margin-bottom: 0.4rem; }
+        .tab-host, .tab-title, .tab-url { display: block; word-break: break-word; }
+        .tab-host { font-weight: 600; }
+        .tab-title { color: var(--color-text-primary); }
+        .tab-url { color: var(--color-text-secondary); font-size: 0.72rem; }
+        .legacy-note, .loading-indicator, .empty-state { color: var(--color-text-secondary); padding: 1rem; text-align: center; }
+        .btn { padding: 0.4rem 0.75rem; border: 1px solid var(--color-border, #94a3b8); background: var(--color-bg-secondary, #e2e8f0); color: var(--color-text-primary, #111827); border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
         .btn:hover:not(:disabled) { opacity: 0.85; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn:disabled { opacity: 0.65; cursor: not-allowed; background: var(--color-bg-muted, #cbd5e1); color: var(--color-text-secondary, #475569); }
+        .btn-primary { background: var(--color-accent, #2563eb); color: #fff; border-color: transparent; }
         .btn-danger { background: var(--color-error, #dc3545); color: #fff; border-color: transparent; }
-        .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
-        
-        .loading-indicator, .error-message, .empty-state { padding: 1.5rem; text-align: center; color: var(--color-text-secondary); }
-        .error-message { color: var(--color-error, #e74c3c); }
+        .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.78rem; }
+        @media (max-width: 860px) {
+            .summary-grid, .control-grid { grid-template-columns: 1fr; }
+            .header-row, .panel-header { flex-direction: column; }
+        }
     </style>
 </body>
 </html>

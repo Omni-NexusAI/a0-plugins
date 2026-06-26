@@ -8,19 +8,30 @@ and localStorage across hard container restarts.
 - Restores the latest current-state snapshot once per runtime boot.
 - Tracks tab loads and closes with debounced, atomic snapshots.
 - Treats an empty tab set as authoritative, so closed tabs stay closed.
+- Restores the latest global browser state by default across chats.
+- Can be switched to per-chat scope when an isolated browser cache is needed.
+- Deletes a chat's browser cache when that chat is removed by default, while preserving the global current state.
 - Keeps timestamped snapshots for explicit manual recovery.
 - Provides manual `browser_session_save` and `browser_session_restore` tools.
 - Stays plugin-owned and does not patch updater-managed Agent Zero files.
 
 ## Configuration
 
-The plugin is enabled by default and can be toggled from its plugin settings.
+Enable or disable the plugin from Agent Zero's parent plugin menu. The plugin's
+own settings control restore, save, scope, and retention behavior.
 
 ```yaml
-enabled: true
 auto_restore: true
 auto_save: true
+session_scope: global
+delete_on_chat_remove: true
+max_auto_restore_tabs: 0
+max_saved_sessions: 500
+max_cache_mb: 1024
 ```
+
+`max_auto_restore_tabs: 0` means automatic restore uses the native Browser tab
+limit. Snapshots still save every open tab for manual recovery.
 
 ## Install
 

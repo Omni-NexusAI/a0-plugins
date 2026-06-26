@@ -11,7 +11,9 @@ This plugin persists native Agent Zero Browser tabs, cookies, and localStorage a
 - The current-state manifest is authoritative, including snapshots containing zero tabs.
 - Preserve legacy storage-only snapshots and timestamped snapshots for manual recovery.
 - Keep save listeners idempotent and saves debounced to avoid duplicate input bindings or browser slowdown.
-- `enabled`, `auto_restore`, and `auto_save` remain independently configurable.
+- Plugin enable/disable is owned by the parent A0 plugin manager; this plugin must not add a second internal enable switch.
+- Global restore scope is the default; per-chat scope is optional and must not delete the global current snapshot during chat cleanup.
+- `auto_restore`, `auto_save`, restore scope, chat-delete cleanup, auto-restore tab limits, and cache retention remain independently configurable.
 
 ## Verification
 

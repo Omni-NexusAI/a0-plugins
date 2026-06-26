@@ -1,11 +1,14 @@
-import json
-import os
 from pathlib import Path
 from helpers import files
 from helpers.api import ApiHandler, Request, Response
 from usr.plugins.browser_session_sync.helpers.session_sync import (
     MANIFEST_FILE_NAME,
+    delete_session_file,
+    enforce_retention,
     load_config,
+    load_manifest,
+    load_snapshot,
+    repair_manifest,
     save_config,
 )
 
@@ -40,20 +43,23 @@ class SessionsList(ApiHandler):
     
     def _list_sessions(self) -> dict:
         SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        manifest = repair_manifest()
         sessions = []
         for f in sorted(self._session_files(), key=lambda p: p.stat().st_mtime, reverse=True):
             try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                sessions.append(self._session_info(f, data))
+                snapshot = load_snapshot(f)
+                sessions.append(self._session_info(f, snapshot, manifest))
             except Exception:
-                sessions.append(self._session_info(f, None))
+                sessions.append(self._session_info(f, None, manifest))
         stats = self._compute_stats(sessions)
-        return {"ok": True, "sessions": sessions, "stats": stats}
+        return {"ok": True, "sessions": sessions, "stats": stats, "config": load_config()}
     
-    def _session_info(self, f: Path, data: dict | None) -> dict:
+    def _session_info(self, f: Path, snapshot: dict | None, manifest: dict) -> dict:
         size = f.stat().st_size
+        context_id = self._context_id_for_file(f.name, manifest)
         info = {
             "name": f.name,
+            "context_id": context_id,
             "size": size,
             "size_str": self._format_size(size),
             "cookies": 0,
@@ -61,18 +67,16 @@ class SessionsList(ApiHandler):
             "domains": [],
             "tabs": [],
             "tab_count": 0,
+            "is_current": self._is_current_context_file(f.name, manifest),
+            "is_global_current": self._is_global_current_file(f.name, manifest),
             "date": f.stat().st_mtime,
             "date_str": self._format_date(f.stat().st_mtime),
         }
-        if data:
-            # Support both new (with context_state + tabs) and legacy (just storage_state) formats
-            if "context_state" in data:
-                context_state = data.get("context_state", {})
-                tabs = data.get("tabs", [])
-                info["tabs"] = tabs
-                info["tab_count"] = len(tabs)
-            else:
-                context_state = data
+        if snapshot:
+            context_state = snapshot.get("context_state") or {}
+            tabs = snapshot.get("tabs") or []
+            info["tabs"] = tabs
+            info["tab_count"] = int(snapshot.get("tab_count") or len(tabs))
             cookies = context_state.get("cookies", [])
             origins = context_state.get("origins", [])
             info["cookies"] = len(cookies)
@@ -97,25 +101,28 @@ class SessionsList(ApiHandler):
             "total_files": len(sessions),
             "total_size": total_size,
             "total_size_str": self._format_size(total_size),
+            "max_cache_mb": load_config().get("max_cache_mb"),
+            "max_saved_sessions": load_config().get("max_saved_sessions"),
             "total_cookies": total_cookies,
             "total_origins": total_origins,
             "total_tabs": total_tabs,
             "unique_domains": len(all_domains),
+            "current_files": sum(1 for s in sessions if s.get("is_current")),
+            "global_current": next((s for s in sessions if s.get("is_global_current")), None),
         }
     
     def _get_stats(self) -> dict:
         SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        manifest = load_manifest()
         sessions = []
         for f in self._session_files():
-            sessions.append(self._session_info(f, None))
+            sessions.append(self._session_info(f, None, manifest))
         return {"ok": True, "stats": self._compute_stats(sessions)}
     
     def _delete_session(self, filename: str) -> dict:
         if not filename or ".." in filename or "/" in filename or "\\" in filename:
             return {"ok": False, "error": "Invalid filename"}
-        fpath = SAVE_DIR / filename
-        if fpath.exists():
-            fpath.unlink()
+        if delete_session_file(filename):
             return {"ok": True}
         return {"ok": False, "error": "File not found"}
     
@@ -124,34 +131,20 @@ class SessionsList(ApiHandler):
         for f in self._session_files():
             f.unlink()
             count += 1
+        repair_manifest()
         return {"ok": True, "deleted": count}
     
     def _prune_oldest(self, keep_count: int) -> dict:
-        files_sorted = sorted(self._session_files(),
-                             key=lambda p: p.stat().st_mtime, reverse=True)
-        if len(files_sorted) <= keep_count:
-            return {"ok": True, "deleted": 0, "message": f"Already at or below limit ({len(files_sorted)} <= {keep_count})"}
-        to_delete = files_sorted[keep_count:]
-        for f in to_delete:
-            f.unlink()
-        return {"ok": True, "deleted": len(to_delete), "kept": keep_count}
+        config = save_config({"max_saved_sessions": keep_count})
+        result = enforce_retention(config)
+        result["message"] = f"Retention now keeps up to {config['max_saved_sessions']} saved sessions."
+        return result
     
     def _enforce_max_size(self, max_mb: float) -> dict:
-        max_bytes = int(max_mb * 1024 * 1024)
-        files_sorted = sorted(self._session_files(),
-                             key=lambda p: p.stat().st_mtime, reverse=True)
-        total_size = sum(f.stat().st_size for f in files_sorted)
-        if total_size <= max_bytes:
-            return {"ok": True, "deleted": 0, "message": f"Cache size OK ({self._format_size(total_size)} <= {max_mb} MB)"}
-        deleted = 0
-        saved_bytes = 0
-        for f in files_sorted[::-1]:
-            if total_size - saved_bytes <= max_bytes:
-                break
-            saved_bytes += f.stat().st_size
-            f.unlink()
-            deleted += 1
-        return {"ok": True, "deleted": deleted, "freed": self._format_size(saved_bytes)}
+        config = save_config({"max_cache_mb": max_mb})
+        result = enforce_retention(config)
+        result["message"] = f"Retention now keeps cache under {config['max_cache_mb']} MB."
+        return result
     
     def _format_size(self, bytes_val: int) -> str:
         if bytes_val < 1024:
@@ -172,3 +165,23 @@ class SessionsList(ApiHandler):
             for path in SAVE_DIR.glob("*.json")
             if path.name != MANIFEST_FILE_NAME
         ]
+
+    def _context_id_for_file(self, filename: str, manifest: dict) -> str:
+        contexts = manifest.get("contexts") if isinstance(manifest.get("contexts"), dict) else {}
+        for context_id, entry in contexts.items():
+            if isinstance(entry, dict) and entry.get("filename") == filename:
+                return str(context_id)
+        global_latest = manifest.get("global_latest")
+        if isinstance(global_latest, dict) and global_latest.get("filename") == filename:
+            return str(global_latest.get("context_id") or "")
+        if "_" in filename:
+            return filename.rsplit("_", 1)[0]
+        return filename.rsplit(".", 1)[0]
+
+    def _is_current_context_file(self, filename: str, manifest: dict) -> bool:
+        contexts = manifest.get("contexts") if isinstance(manifest.get("contexts"), dict) else {}
+        return any(isinstance(entry, dict) and entry.get("filename") == filename for entry in contexts.values())
+
+    def _is_global_current_file(self, filename: str, manifest: dict) -> bool:
+        global_latest = manifest.get("global_latest")
+        return isinstance(global_latest, dict) and global_latest.get("filename") == filename
